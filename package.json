@@ -1,0 +1,29 @@
+{
+  "name": "@eat/floorplan-widget",
+  "version": "1.0.0",
+  "description": "Floorplan renderer for Widget.",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs",
+    "dev": "tsup src/index.ts --format cjs --watch",
+    "lint": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
+    "clean": "rm -rf dist"
+  },
+  "author": "EAT App",
+  "license": "MIT",
+  "dependencies": {
+    "fabric": "^5.5.2"
+  },
+  "devDependencies": {
+    "@types/fabric": "^5.3.0",
+    "@types/node": "^20.10.0",
+    "prettier": "^3.2.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.2"
+  }
+}
