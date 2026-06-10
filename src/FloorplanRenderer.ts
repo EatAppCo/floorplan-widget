@@ -40,6 +40,7 @@ export class FloorplanRenderer {
   private blockedTableIds: string[] = [];
   private preferredTableIds: string[] = [];
   private selectedTableIds: string[] = [];
+  private selectionMode: 'single' | 'multi' = 'multi';
   private selectedRoom: Room | null = null;
   private onTableClick: OnTableClickCallback | null = null;
   private onRoomChange: OnRoomChangeCallback | null = null;
@@ -64,6 +65,10 @@ export class FloorplanRenderer {
     this.rooms = options.rooms || [];
     this.blockedTableIds = options.blockedTableIds || [];
     this.preferredTableIds = options.preferredTableIds || [];
+    this.selectionMode = options.selectionMode || 'multi';
+    this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
+      (id) => !this.blockedTableIds.includes(id)
+    );
 
     if (this.rooms.length === 0) {
       this.emitError(new Error('No rooms available.'));
@@ -157,11 +162,17 @@ export class FloorplanRenderer {
         if (target && target instanceof TableGroup) {
           const table = target.tableContext;
           if (table && table.type === 'Table') {
-            const tableIndex = this.selectedTableIds.indexOf(table.id);
-            if (tableIndex === -1) {
-              this.selectedTableIds.push(table.id);
+            if (this.selectionMode === 'single') {
+              this.selectedTableIds = this.selectedTableIds.includes(table.id)
+                ? []
+                : [table.id];
             } else {
-              this.selectedTableIds.splice(tableIndex, 1);
+              const tableIndex = this.selectedTableIds.indexOf(table.id);
+              if (tableIndex === -1) {
+                this.selectedTableIds.push(table.id);
+              } else {
+                this.selectedTableIds.splice(tableIndex, 1);
+              }
             }
 
             // Re-render to update selection styling
@@ -226,7 +237,7 @@ export class FloorplanRenderer {
     isSelected: boolean
   ): LabelGroup {
     const config = LABEL_SIZE_CONFIG.very_small;
-    const tableNumber = '$';
+    const tableNumber = table.number;
 
     const textElement = new fabric.Text(tableNumber, {
       ...DISABLED_OBJECT_PROPERTIES,

@@ -67,6 +67,8 @@ export interface FloorplanRendererOptions {
   rooms: Room[];
   blockedTableIds?: string[];
   preferredTableIds?: string[];
+  selectionMode?: 'single' | 'multi';
+  initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
   onRoomChange?: OnRoomChangeCallback;
   onError?: OnErrorCallback;

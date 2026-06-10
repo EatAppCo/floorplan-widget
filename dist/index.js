@@ -380,6 +380,7 @@ var FloorplanRenderer = class {
     this.blockedTableIds = [];
     this.preferredTableIds = [];
     this.selectedTableIds = [];
+    this.selectionMode = "multi";
     this.selectedRoom = null;
     this.onTableClick = null;
     this.onRoomChange = null;
@@ -397,6 +398,10 @@ var FloorplanRenderer = class {
     this.rooms = options.rooms || [];
     this.blockedTableIds = options.blockedTableIds || [];
     this.preferredTableIds = options.preferredTableIds || [];
+    this.selectionMode = options.selectionMode || "multi";
+    this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
+      (id) => !this.blockedTableIds.includes(id)
+    );
     if (this.rooms.length === 0) {
       this.emitError(new Error("No rooms available."));
       return;
@@ -468,11 +473,15 @@ var FloorplanRenderer = class {
         if (target && target instanceof TableGroup_default) {
           const table = target.tableContext;
           if (table && table.type === "Table") {
-            const tableIndex = this.selectedTableIds.indexOf(table.id);
-            if (tableIndex === -1) {
-              this.selectedTableIds.push(table.id);
+            if (this.selectionMode === "single") {
+              this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
             } else {
-              this.selectedTableIds.splice(tableIndex, 1);
+              const tableIndex = this.selectedTableIds.indexOf(table.id);
+              if (tableIndex === -1) {
+                this.selectedTableIds.push(table.id);
+              } else {
+                this.selectedTableIds.splice(tableIndex, 1);
+              }
             }
             this.render();
             if (this.onTableClick) {
@@ -518,7 +527,7 @@ var FloorplanRenderer = class {
    */
   createTableNumberLabel(table, isSelected) {
     const config = LABEL_SIZE_CONFIG.very_small;
-    const tableNumber = "$";
+    const tableNumber = table.number;
     const textElement = new import_fabric.fabric.Text(tableNumber, {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
