@@ -76,6 +76,8 @@ var FLOOR_DEFAULT = {
 };
 var INVISIBLE_CHARACTER = "\u200E";
 var SCALE = 64;
+var ZOOM_STEPS = [1, 1.5, 2, 2.5];
+var DRAG_THRESHOLD = 5;
 var DISABLED_OBJECT_PROPERTIES = {
   selectable: false,
   evented: false,
@@ -390,6 +392,15 @@ var FloorplanRenderer = class {
     this.onRoomChange = null;
     this.onError = null;
     this.canvasSize = 0;
+    this.zoomControlsElement = null;
+    this.zoomInButton = null;
+    this.zoomOutButton = null;
+    this.zoomStepIndex = 0;
+    this.isPanning = false;
+    this.lastPointer = null;
+    this.dragDistance = 0;
+    this.pendingPanDelta = null;
+    this.panRafId = null;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -467,6 +478,7 @@ var FloorplanRenderer = class {
       });
       this.setupEventHandlers();
       this.render();
+      this.renderZoomControls();
     } catch (error) {
       this.emitError(
         error instanceof Error ? error : new Error("Failed to initialize floorplan.")
@@ -485,40 +497,214 @@ var FloorplanRenderer = class {
     }
   }
   /**
-   * Set up canvas event handlers
+   * Set up canvas event handlers. Pointer down/move/up drive drag-pan (when zoomed)
+   * and, on a non-drag release, table selection.
    */
   setupEventHandlers() {
     if (!this.canvas) return;
-    this.canvas.on("mouse:up", (event) => {
-      try {
-        const target = event.target;
-        if (target && target instanceof TableGroup_default) {
-          const table = target.tableContext;
-          if (table && table.type === "Table") {
-            if (this.selectionMode === "single") {
-              this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
-            } else {
-              const tableIndex = this.selectedTableIds.indexOf(table.id);
-              if (tableIndex !== -1) {
-                this.selectedTableIds.splice(tableIndex, 1);
-              } else if (this.atSelectionLimit()) {
-                return;
-              } else {
-                this.selectedTableIds.push(table.id);
-              }
-            }
-            this.render();
-            if (this.onTableClick) {
-              this.onTableClick(table, [...this.selectedTableIds]);
-            }
-          }
+    this.canvas.on(
+      "mouse:down",
+      (opt) => this.onPointerDown(opt)
+    );
+    this.canvas.on(
+      "mouse:move",
+      (opt) => this.onPointerMove(opt)
+    );
+    this.canvas.on(
+      "mouse:up",
+      (opt) => this.onPointerUp(opt)
+    );
+  }
+  /**
+   * Screen-space coordinates of a mouse or touch pointer event
+   */
+  pointerXY(e) {
+    if ("touches" in e) {
+      const touch = e.touches[0] || e.changedTouches[0];
+      return touch ? { x: touch.clientX, y: touch.clientY } : { x: 0, y: 0 };
+    }
+    return { x: e.clientX, y: e.clientY };
+  }
+  onPointerDown(opt) {
+    this.lastPointer = this.pointerXY(opt.e);
+    this.dragDistance = 0;
+    this.isPanning = this.currentZoom() > 1;
+  }
+  onPointerMove(opt) {
+    if (!this.lastPointer) return;
+    const xy = this.pointerXY(opt.e);
+    const dx = xy.x - this.lastPointer.x;
+    const dy = xy.y - this.lastPointer.y;
+    this.dragDistance += Math.abs(dx) + Math.abs(dy);
+    this.lastPointer = xy;
+    if (this.isPanning) {
+      opt.e.preventDefault();
+      this.schedulePan(dx, dy);
+    }
+  }
+  onPointerUp(opt) {
+    const wasDrag = this.dragDistance > DRAG_THRESHOLD;
+    this.lastPointer = null;
+    this.isPanning = false;
+    this.dragDistance = 0;
+    if (!wasDrag) {
+      this.handleTableSelect(opt);
+    }
+  }
+  /**
+   * Toggle the pressed table's selection and notify the host
+   */
+  handleTableSelect(opt) {
+    try {
+      const target = opt.target;
+      if (!(target instanceof TableGroup_default)) return;
+      const table = target.tableContext;
+      if (!table || table.type !== "Table") return;
+      if (this.selectionMode === "single") {
+        this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
+      } else {
+        const tableIndex = this.selectedTableIds.indexOf(table.id);
+        if (tableIndex !== -1) {
+          this.selectedTableIds.splice(tableIndex, 1);
+        } else if (this.atSelectionLimit()) {
+          return;
+        } else {
+          this.selectedTableIds.push(table.id);
         }
-      } catch (error) {
-        this.emitError(
-          error instanceof Error ? error : new Error("Error handling table click.")
-        );
       }
+      this.render();
+      if (this.onTableClick) {
+        this.onTableClick(table, [...this.selectedTableIds]);
+      }
+    } catch (error) {
+      this.emitError(
+        error instanceof Error ? error : new Error("Error handling table click.")
+      );
+    }
+  }
+  /**
+   * Current canvas zoom (1 = fit)
+   */
+  currentZoom() {
+    return this.canvas ? this.canvas.getZoom() : 1;
+  }
+  /**
+   * Apply a pan delta on the next frame, coalescing pointer events to one
+   * viewport write per frame (Fabric pan is main-thread heavy on large rooms)
+   */
+  schedulePan(dx, dy) {
+    this.pendingPanDelta = {
+      x: (this.pendingPanDelta?.x || 0) + dx,
+      y: (this.pendingPanDelta?.y || 0) + dy
+    };
+    if (this.panRafId !== null) return;
+    this.panRafId = requestAnimationFrame(() => {
+      this.panRafId = null;
+      const delta = this.pendingPanDelta;
+      this.pendingPanDelta = null;
+      if (!delta || !this.canvas) return;
+      this.canvas.relativePan(new import_fabric.fabric.Point(delta.x, delta.y));
+      this.clampPan();
+      this.syncBackgroundTransform();
     });
+  }
+  /**
+   * Keep the panned viewport within the room bounds (no empty gutters)
+   */
+  clampPan() {
+    if (!this.canvas) return;
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+    const min = this.canvasSize * (1 - this.canvas.getZoom());
+    vpt[4] = Math.min(0, Math.max(min, vpt[4]));
+    vpt[5] = Math.min(0, Math.max(min, vpt[5]));
+    this.canvas.setViewportTransform(vpt);
+  }
+  /**
+   * Mirror the canvas viewport onto the sibling background div. The image stays
+   * a DOM div (not a canvas background) so the L3 minimap's toDataURL can't be
+   * CORS-tainted by the CDN image.
+   */
+  syncBackgroundTransform() {
+    if (!this.backgroundElement || !this.canvas) return;
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+    this.backgroundElement.style.transform = `translate(${vpt[4]}px, ${vpt[5]}px) scale(${vpt[0]})`;
+  }
+  /**
+   * Render the zoom in/out buttons over the canvas
+   */
+  renderZoomControls() {
+    if (!this.canvasContainerElement) return;
+    this.zoomControlsElement = document.createElement("div");
+    this.zoomControlsElement.className = "floorplan-zoom-controls";
+    this.zoomInButton = this.createZoomButton(
+      "+",
+      "Zoom in",
+      () => this.stepZoom(1)
+    );
+    this.zoomOutButton = this.createZoomButton(
+      "\u2212",
+      "Zoom out",
+      () => this.stepZoom(-1)
+    );
+    this.zoomControlsElement.appendChild(this.zoomInButton);
+    this.zoomControlsElement.appendChild(this.zoomOutButton);
+    this.canvasContainerElement.appendChild(this.zoomControlsElement);
+    this.updateZoomButtons();
+  }
+  createZoomButton(label, ariaLabel, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "floorplan-zoom-button";
+    button.textContent = label;
+    button.setAttribute("aria-label", ariaLabel);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+  /**
+   * Step the zoom one level, then recenter (at fit) or clamp the viewport
+   */
+  stepZoom(direction) {
+    if (!this.canvas) return;
+    const nextIndex = Math.min(
+      ZOOM_STEPS.length - 1,
+      Math.max(0, this.zoomStepIndex + direction)
+    );
+    if (nextIndex === this.zoomStepIndex) return;
+    this.zoomStepIndex = nextIndex;
+    const zoom = ZOOM_STEPS[nextIndex];
+    const center = new import_fabric.fabric.Point(this.canvasSize / 2, this.canvasSize / 2);
+    this.canvas.zoomToPoint(center, zoom);
+    if (zoom === 1) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    } else {
+      this.clampPan();
+    }
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+  }
+  /**
+   * Reset to fit-zoom and recenter (used on room change)
+   */
+  resetView() {
+    this.zoomStepIndex = 0;
+    if (this.canvas) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    }
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+  }
+  /**
+   * Disable each zoom button at its limit
+   */
+  updateZoomButtons() {
+    if (this.zoomInButton) {
+      this.zoomInButton.disabled = this.zoomStepIndex >= ZOOM_STEPS.length - 1;
+    }
+    if (this.zoomOutButton) {
+      this.zoomOutButton.disabled = this.zoomStepIndex <= 0;
+    }
   }
   /**
    * Render room tabs
@@ -749,6 +935,7 @@ var FloorplanRenderer = class {
     } else {
       this.backgroundElement.style.backgroundImage = "";
     }
+    this.syncBackgroundTransform();
   }
   /**
    * Render all tables on the canvas
@@ -756,7 +943,11 @@ var FloorplanRenderer = class {
   render() {
     try {
       if (!this.canvas) return;
+      const vpt = this.canvas.viewportTransform ? [...this.canvas.viewportTransform] : null;
       this.canvas.clear();
+      if (vpt) {
+        this.canvas.setViewportTransform(vpt);
+      }
       this.updateBackgroundImage();
       const tablesToRender = (this.selectedRoom && this.selectedRoom.tables || []).filter((table) => this.showEmojis || !isEmoji(table, floorEmojiList));
       const sortedTables = sortTablesByRenderOrder(
@@ -793,12 +984,17 @@ var FloorplanRenderer = class {
       this.onRoomChange(room);
     }
     this.renderTabs();
+    this.resetView();
     this.render();
   }
   /**
    * Destroy the renderer and clean up resources
    */
   destroy() {
+    if (this.panRafId !== null) {
+      cancelAnimationFrame(this.panRafId);
+      this.panRafId = null;
+    }
     if (this.canvas) {
       this.canvas.dispose();
       this.canvas = null;
@@ -817,6 +1013,9 @@ var FloorplanRenderer = class {
     this.canvasContainerElement = null;
     this.backgroundElement = null;
     this.canvasElement = null;
+    this.zoomControlsElement = null;
+    this.zoomInButton = null;
+    this.zoomOutButton = null;
   }
 };
 // Annotate the CommonJS export names for ESM import in node:

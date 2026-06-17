@@ -60,4 +60,38 @@
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+  transform-origin: top left;
+  will-change: transform;
+}
+.floorplan-zoom-controls {
+  position: absolute;
+  bottom: 16px;
+  inset-inline-end: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2;
+}
+.floorplan-zoom-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  background-color: #fff;
+  color: #34353a;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.floorplan-zoom-button:hover {
+  background-color: #f8f8f8;
+}
+.floorplan-zoom-button:disabled {
+  color: #cccccc;
+  cursor: default;
 }
