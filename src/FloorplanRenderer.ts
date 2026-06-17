@@ -28,7 +28,6 @@ import {
   LABEL_SIZE_CONFIG,
 } from './config/defaults';
 
-
 export class FloorplanRenderer {
   private canvas: fabric.Canvas | null = null;
   private canvasElement: HTMLCanvasElement | null = null;
@@ -39,8 +38,12 @@ export class FloorplanRenderer {
   private rooms: Room[] = [];
   private blockedTableIds: string[] = [];
   private preferredTableIds: string[] = [];
+  private paidTableIds: string[] = [];
   private selectedTableIds: string[] = [];
   private selectionMode: 'single' | 'multi' = 'multi';
+  private maxSelectable: number | null = null;
+  private showBackgroundImage: boolean = true;
+  private showEmojis: boolean = true;
   private selectedRoom: Room | null = null;
   private onTableClick: OnTableClickCallback | null = null;
   private onRoomChange: OnRoomChangeCallback | null = null;
@@ -55,7 +58,7 @@ export class FloorplanRenderer {
 
     // Validate container element
     if (!options.containerElement) {
-      const error = new Error('Container element is required.')
+      const error = new Error('Container element is required.');
       this.emitError(error);
       return;
     }
@@ -65,18 +68,31 @@ export class FloorplanRenderer {
     this.rooms = options.rooms || [];
     this.blockedTableIds = options.blockedTableIds || [];
     this.preferredTableIds = options.preferredTableIds || [];
+    this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || 'multi';
+    this.maxSelectable = options.maxSelectable ?? null;
+    this.showBackgroundImage = options.showBackgroundImage ?? true;
+    this.showEmojis = options.showEmojis ?? true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
+    // A restored selection (back-nav) must respect a tightened cap, not just blocked tables
+    if (this.maxSelectable !== null) {
+      this.selectedTableIds = this.selectedTableIds.slice(
+        0,
+        this.maxSelectable
+      );
+    }
 
     if (this.rooms.length === 0) {
       this.emitError(new Error('No rooms available.'));
       return;
     }
 
-    // Set initial room
-    this.selectedRoom = this.rooms[0];
+    // Open the requested room, else the first
+    this.selectedRoom =
+      this.rooms.find((room) => room.id === options.initialRoomId) ||
+      this.rooms[0];
 
     this.initialize();
   }
@@ -88,6 +104,16 @@ export class FloorplanRenderer {
     if (this.onError) {
       this.onError(error);
     }
+  }
+
+  /**
+   * Whether the multi-select cap has been reached
+   */
+  private atSelectionLimit(): boolean {
+    return (
+      this.maxSelectable !== null &&
+      this.selectedTableIds.length >= this.maxSelectable
+    );
   }
 
   /**
@@ -132,7 +158,11 @@ export class FloorplanRenderer {
       this.setupEventHandlers();
       this.render();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error('Failed to initialize floorplan.'));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error('Failed to initialize floorplan.')
+      );
     }
   }
 
@@ -168,10 +198,12 @@ export class FloorplanRenderer {
                 : [table.id];
             } else {
               const tableIndex = this.selectedTableIds.indexOf(table.id);
-              if (tableIndex === -1) {
-                this.selectedTableIds.push(table.id);
-              } else {
+              if (tableIndex !== -1) {
                 this.selectedTableIds.splice(tableIndex, 1);
+              } else if (this.atSelectionLimit()) {
+                return; // at the cap — ignore selecting another table
+              } else {
+                this.selectedTableIds.push(table.id);
               }
             }
 
@@ -184,7 +216,11 @@ export class FloorplanRenderer {
           }
         }
       } catch (error) {
-        this.emitError(error instanceof Error ? error : new Error('Error handling table click.'));
+        this.emitError(
+          error instanceof Error
+            ? error
+            : new Error('Error handling table click.')
+        );
       }
     });
   }
@@ -274,6 +310,59 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Create a `$` badge for a table that incurs an up-front payment
+   */
+  private createPaymentLabel(table: Table): LabelGroup {
+    const config = LABEL_SIZE_CONFIG.very_small;
+
+    const textElement = new fabric.Text('$', {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: 'Inter, sans-serif',
+      fill: palette.white,
+      fontSize: config.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: 'center',
+    });
+
+    const circleSize = config.LINE_HEIGHT;
+
+    const labelRect = new fabric.Rect({
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      height: circleSize,
+      width: circleSize,
+      rx: circleSize / 2,
+      ry: circleSize / 2,
+      fill: palette.green100,
+      stroke: palette.green100,
+      strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+    });
+
+    return new LabelGroup([labelRect, textElement], {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      _relatedTableId: table.id,
+      _positionOnTable: 'bottom',
+    });
+  }
+
+  /**
+   * Create a centered name label for a non-emoji shape (e.g. "Burj Khalifa View")
+   */
+  private createShapeLabel(table: Table): fabric.Object {
+    return new fabric.Text(table.number, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: 'Inter, sans-serif',
+      fill: palette.dark100,
+      fontSize: LABEL_SIZE_CONFIG.very_small.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: 'center',
+    });
+  }
+
+  /**
    * Create a table object for rendering on canvas
    */
   private createTableObject(table: Table): {
@@ -294,6 +383,7 @@ export class FloorplanRenderer {
       const isBlocked = this.blockedTableIds.includes(table.id);
       const isSelected = this.selectedTableIds.includes(table.id);
       const isPreferred = this.preferredTableIds.includes(table.id);
+      const isPaid = this.paidTableIds.includes(table.id);
 
       // Table object options
       const tableObjectOptions = {
@@ -350,8 +440,13 @@ export class FloorplanRenderer {
         });
       }
 
-      // Create table group
-      const tableGroup = new TableGroup([tableObject], {
+      // Non-emoji shapes carry a centered name label that rotates with the group
+      const groupObjects: fabric.Object[] = [tableObject];
+      if (isShape && !isEmojiType && table.number) {
+        groupObjects.push(this.createShapeLabel(table));
+      }
+
+      const tableGroup = new TableGroup(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
         top,
@@ -362,14 +457,23 @@ export class FloorplanRenderer {
         hoverCursor: isTable && !isBlocked ? 'pointer' : 'default',
       });
 
+      // The bottom slot holds one badge: `$` takes precedence, else the preferred number
       let labelGroup: LabelGroup | null = null;
-      if (!isEmojiType && !isBlocked && isPreferred && isTable) {
-        labelGroup = this.createTableNumberLabel(table, isSelected);
+      if (!isEmojiType && !isBlocked && isTable) {
+        if (isPaid) {
+          labelGroup = this.createPaymentLabel(table);
+        } else if (isPreferred) {
+          labelGroup = this.createTableNumberLabel(table, isSelected);
+        }
       }
 
       return { tableGroup, labelGroup };
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error(`Failed to create table: ${table.id}.`));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error(`Failed to create table: ${table.id}.`)
+      );
       return {
         tableGroup: new TableGroup([], { tableContext: table }),
         labelGroup: null,
@@ -425,10 +529,14 @@ export class FloorplanRenderer {
       );
     }
 
-    if (this.selectedRoom && this.selectedRoom.background_image_url) {
+    if (
+      this.showBackgroundImage &&
+      this.selectedRoom &&
+      this.selectedRoom.background_image_url
+    ) {
       this.backgroundElement.style.backgroundImage = `url(${this.selectedRoom.background_image_url})`;
     } else {
-      // Clear background image if not set
+      // Clear background image when hidden or not set
       this.backgroundElement.style.backgroundImage = '';
     }
   }
@@ -444,9 +552,11 @@ export class FloorplanRenderer {
 
       this.updateBackgroundImage();
 
-      // Get tables from selected room
-      const tablesToRender =
-        (this.selectedRoom && this.selectedRoom.tables) || [];
+      // Get tables from selected room, optionally hiding emoji decor
+      const tablesToRender = (
+        (this.selectedRoom && this.selectedRoom.tables) ||
+        []
+      ).filter((table) => this.showEmojis || !isEmoji(table, floorEmojiList));
 
       // Sort tables by render order (shapes first, then emojis, then tables)
       const sortedTables = sortTablesByRenderOrder(
@@ -468,7 +578,11 @@ export class FloorplanRenderer {
 
       this.canvas.renderAll();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error('Failed to render floorplan.'));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error('Failed to render floorplan.')
+      );
     }
   }
 

@@ -67,6 +67,16 @@ export interface FloorplanRendererOptions {
   rooms: Room[];
   blockedTableIds?: string[];
   preferredTableIds?: string[];
+  /** Tables that incur an up-front payment — rendered with a `$` badge */
+  paidTableIds?: string[];
+  /** Cap on how many tables can be selected at once in multi mode (omit = unbounded) */
+  maxSelectable?: number;
+  /** Show each room's background image (default true) */
+  showBackgroundImage?: boolean;
+  /** Show emoji decor shapes (default true); false filters them out */
+  showEmojis?: boolean;
+  /** Room to open on first render (defaults to the first room) */
+  initialRoomId?: string;
   selectionMode?: 'single' | 'multi';
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
