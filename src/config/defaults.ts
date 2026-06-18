@@ -45,6 +45,21 @@ export const INVISIBLE_CHARACTER = '\u200E';
 export const SCALE = 64;
 
 /**
+ * Discrete zoom levels stepped through by the zoom buttons (index 0 = fit)
+ */
+export const ZOOM_STEPS = [1, 1.5, 2, 2.5] as const;
+
+/**
+ * Pointer travel (px) past which a press counts as a drag, not a table tap
+ */
+export const DRAG_THRESHOLD = 5;
+
+/**
+ * Side length (px) of the navigation minimap shown while zoomed in
+ */
+export const MINIMAP_SIZE = 120;
+
+/**
  * Common properties for non-interactive Fabric objects
  */
 export const DISABLED_OBJECT_PROPERTIES = {

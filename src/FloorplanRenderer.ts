@@ -25,9 +25,11 @@ import {
   CENTER_ORIGIN,
   DEFAULT_TABLE_GROUP_OPTIONS,
   DISABLED_OBJECT_PROPERTIES,
+  DRAG_THRESHOLD,
   LABEL_SIZE_CONFIG,
+  MINIMAP_SIZE,
+  ZOOM_STEPS,
 } from './config/defaults';
-
 
 export class FloorplanRenderer {
   private canvas: fabric.Canvas | null = null;
@@ -39,13 +41,30 @@ export class FloorplanRenderer {
   private rooms: Room[] = [];
   private blockedTableIds: string[] = [];
   private preferredTableIds: string[] = [];
+  private paidTableIds: string[] = [];
   private selectedTableIds: string[] = [];
   private selectionMode: 'single' | 'multi' = 'multi';
+  private maxSelectable: number | null = null;
+  private showBackgroundImage: boolean = true;
+  private showEmojis: boolean = true;
   private selectedRoom: Room | null = null;
   private onTableClick: OnTableClickCallback | null = null;
   private onRoomChange: OnRoomChangeCallback | null = null;
   private onError: OnErrorCallback | null = null;
   private canvasSize: number = 0;
+  private zoomControlsElement: HTMLElement | null = null;
+  private zoomInButton: HTMLButtonElement | null = null;
+  private zoomOutButton: HTMLButtonElement | null = null;
+  private minimapElement: HTMLElement | null = null;
+  private minimapImageElement: HTMLImageElement | null = null;
+  private minimapViewportElement: HTMLElement | null = null;
+  private minimapAvailable: boolean = true;
+  private zoomStepIndex: number = 0;
+  private isPanning: boolean = false;
+  private lastPointer: { x: number; y: number } | null = null;
+  private dragDistance: number = 0;
+  private pendingPanDelta: { x: number; y: number } | null = null;
+  private panRafId: number | null = null;
 
   constructor(options: FloorplanRendererOptions) {
     // Set callbacks
@@ -55,7 +74,7 @@ export class FloorplanRenderer {
 
     // Validate container element
     if (!options.containerElement) {
-      const error = new Error('Container element is required.')
+      const error = new Error('Container element is required.');
       this.emitError(error);
       return;
     }
@@ -65,18 +84,31 @@ export class FloorplanRenderer {
     this.rooms = options.rooms || [];
     this.blockedTableIds = options.blockedTableIds || [];
     this.preferredTableIds = options.preferredTableIds || [];
+    this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || 'multi';
+    this.maxSelectable = options.maxSelectable ?? null;
+    this.showBackgroundImage = options.showBackgroundImage ?? true;
+    this.showEmojis = options.showEmojis ?? true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
+    // A restored selection (back-nav) must respect a tightened cap, not just blocked tables
+    if (this.maxSelectable !== null) {
+      this.selectedTableIds = this.selectedTableIds.slice(
+        0,
+        this.maxSelectable
+      );
+    }
 
     if (this.rooms.length === 0) {
       this.emitError(new Error('No rooms available.'));
       return;
     }
 
-    // Set initial room
-    this.selectedRoom = this.rooms[0];
+    // Open the requested room, else the first
+    this.selectedRoom =
+      this.rooms.find((room) => room.id === options.initialRoomId) ||
+      this.rooms[0];
 
     this.initialize();
   }
@@ -88,6 +120,16 @@ export class FloorplanRenderer {
     if (this.onError) {
       this.onError(error);
     }
+  }
+
+  /**
+   * Whether the multi-select cap has been reached
+   */
+  private atSelectionLimit(): boolean {
+    return (
+      this.maxSelectable !== null &&
+      this.selectedTableIds.length >= this.maxSelectable
+    );
   }
 
   /**
@@ -131,8 +173,16 @@ export class FloorplanRenderer {
 
       this.setupEventHandlers();
       this.render();
+      this.renderZoomControls();
+      this.renderMinimap();
+      this.captureMinimap();
+      this.syncMinimap();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error('Failed to initialize floorplan.'));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error('Failed to initialize floorplan.')
+      );
     }
   }
 
@@ -151,42 +201,330 @@ export class FloorplanRenderer {
   }
 
   /**
-   * Set up canvas event handlers
+   * Set up canvas event handlers. Pointer down/move/up drive drag-pan (when zoomed)
+   * and, on a non-drag release, table selection.
    */
   private setupEventHandlers(): void {
     if (!this.canvas) return;
 
-    this.canvas.on('mouse:up', (event: fabric.IEvent<MouseEvent>) => {
-      try {
-        const target = event.target;
-        if (target && target instanceof TableGroup) {
-          const table = target.tableContext;
-          if (table && table.type === 'Table') {
-            if (this.selectionMode === 'single') {
-              this.selectedTableIds = this.selectedTableIds.includes(table.id)
-                ? []
-                : [table.id];
-            } else {
-              const tableIndex = this.selectedTableIds.indexOf(table.id);
-              if (tableIndex === -1) {
-                this.selectedTableIds.push(table.id);
-              } else {
-                this.selectedTableIds.splice(tableIndex, 1);
-              }
-            }
+    this.canvas.on('mouse:down', (opt: fabric.IEvent<MouseEvent>) =>
+      this.onPointerDown(opt)
+    );
+    this.canvas.on('mouse:move', (opt: fabric.IEvent<MouseEvent>) =>
+      this.onPointerMove(opt)
+    );
+    this.canvas.on('mouse:up', (opt: fabric.IEvent<MouseEvent>) =>
+      this.onPointerUp(opt)
+    );
+  }
 
-            // Re-render to update selection styling
-            this.render();
+  /**
+   * Screen-space coordinates of a mouse or touch pointer event
+   */
+  private pointerXY(e: MouseEvent | TouchEvent): { x: number; y: number } {
+    if ('touches' in e) {
+      const touch = e.touches[0] || e.changedTouches[0];
+      return touch ? { x: touch.clientX, y: touch.clientY } : { x: 0, y: 0 };
+    }
+    return { x: e.clientX, y: e.clientY };
+  }
 
-            if (this.onTableClick) {
-              this.onTableClick(table, [...this.selectedTableIds]);
-            }
-          }
+  private onPointerDown(opt: fabric.IEvent<MouseEvent>): void {
+    this.lastPointer = this.pointerXY(opt.e as MouseEvent | TouchEvent);
+    this.dragDistance = 0;
+    // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll
+    this.isPanning = this.currentZoom() > 1;
+  }
+
+  private onPointerMove(opt: fabric.IEvent<MouseEvent>): void {
+    if (!this.lastPointer) return;
+
+    const xy = this.pointerXY(opt.e as MouseEvent | TouchEvent);
+    const dx = xy.x - this.lastPointer.x;
+    const dy = xy.y - this.lastPointer.y;
+    this.dragDistance += Math.abs(dx) + Math.abs(dy);
+    this.lastPointer = xy;
+
+    if (this.isPanning) {
+      opt.e.preventDefault();
+      this.schedulePan(dx, dy);
+    }
+  }
+
+  private onPointerUp(opt: fabric.IEvent<MouseEvent>): void {
+    const wasDrag = this.dragDistance > DRAG_THRESHOLD;
+    this.lastPointer = null;
+    this.isPanning = false;
+    this.dragDistance = 0;
+
+    // A drag pans the canvas; only a clean press selects a table
+    if (!wasDrag) {
+      this.handleTableSelect(opt);
+    }
+  }
+
+  /**
+   * Toggle the pressed table's selection and notify the host
+   */
+  private handleTableSelect(opt: fabric.IEvent<MouseEvent>): void {
+    try {
+      const target = opt.target;
+      if (!(target instanceof TableGroup)) return;
+
+      const table = target.tableContext;
+      if (!table || table.type !== 'Table') return;
+
+      if (this.selectionMode === 'single') {
+        this.selectedTableIds = this.selectedTableIds.includes(table.id)
+          ? []
+          : [table.id];
+      } else {
+        const tableIndex = this.selectedTableIds.indexOf(table.id);
+        if (tableIndex !== -1) {
+          this.selectedTableIds.splice(tableIndex, 1);
+        } else if (this.atSelectionLimit()) {
+          return; // at the cap — ignore selecting another table
+        } else {
+          this.selectedTableIds.push(table.id);
         }
-      } catch (error) {
-        this.emitError(error instanceof Error ? error : new Error('Error handling table click.'));
       }
+
+      // Re-render to update selection styling
+      this.render();
+
+      if (this.onTableClick) {
+        this.onTableClick(table, [...this.selectedTableIds]);
+      }
+    } catch (error) {
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error('Error handling table click.')
+      );
+    }
+  }
+
+  /**
+   * Current canvas zoom (1 = fit)
+   */
+  private currentZoom(): number {
+    return this.canvas ? this.canvas.getZoom() : 1;
+  }
+
+  /**
+   * Apply a pan delta on the next frame, coalescing pointer events to one
+   * viewport write per frame (Fabric pan is main-thread heavy on large rooms)
+   */
+  private schedulePan(dx: number, dy: number): void {
+    this.pendingPanDelta = {
+      x: (this.pendingPanDelta?.x || 0) + dx,
+      y: (this.pendingPanDelta?.y || 0) + dy,
+    };
+
+    if (this.panRafId !== null) return;
+
+    this.panRafId = requestAnimationFrame(() => {
+      this.panRafId = null;
+      const delta = this.pendingPanDelta;
+      this.pendingPanDelta = null;
+      if (!delta || !this.canvas) return;
+
+      this.canvas.relativePan(new fabric.Point(delta.x, delta.y));
+      this.clampPan();
+      this.syncBackgroundTransform();
+      this.syncMinimap();
     });
+  }
+
+  /**
+   * Keep the panned viewport within the room bounds (no empty gutters)
+   */
+  private clampPan(): void {
+    if (!this.canvas) return;
+
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+
+    const min = this.canvasSize * (1 - this.canvas.getZoom());
+    vpt[4] = Math.min(0, Math.max(min, vpt[4]));
+    vpt[5] = Math.min(0, Math.max(min, vpt[5]));
+    this.canvas.setViewportTransform(vpt);
+  }
+
+  /**
+   * Mirror the canvas viewport onto the sibling background div. The image stays
+   * a DOM div (not a canvas background) so the L3 minimap's toDataURL can't be
+   * CORS-tainted by the CDN image.
+   */
+  private syncBackgroundTransform(): void {
+    if (!this.backgroundElement || !this.canvas) return;
+
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+
+    this.backgroundElement.style.transform = `translate(${vpt[4]}px, ${vpt[5]}px) scale(${vpt[0]})`;
+  }
+
+  /**
+   * Render the zoom in/out buttons over the canvas
+   */
+  private renderZoomControls(): void {
+    if (!this.canvasContainerElement) return;
+
+    this.zoomControlsElement = document.createElement('div');
+    this.zoomControlsElement.className = 'floorplan-zoom-controls';
+
+    this.zoomInButton = this.createZoomButton('+', 'Zoom in', () =>
+      this.stepZoom(1)
+    );
+    this.zoomOutButton = this.createZoomButton('−', 'Zoom out', () =>
+      this.stepZoom(-1)
+    );
+
+    this.zoomControlsElement.appendChild(this.zoomInButton);
+    this.zoomControlsElement.appendChild(this.zoomOutButton);
+    this.canvasContainerElement.appendChild(this.zoomControlsElement);
+
+    this.updateZoomButtons();
+  }
+
+  private createZoomButton(
+    label: string,
+    ariaLabel: string,
+    onClick: () => void
+  ): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'floorplan-zoom-button';
+    button.textContent = label;
+    button.setAttribute('aria-label', ariaLabel);
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  /**
+   * Step the zoom one level, then recenter (at fit) or clamp the viewport
+   */
+  private stepZoom(direction: number): void {
+    if (!this.canvas) return;
+
+    const nextIndex = Math.min(
+      ZOOM_STEPS.length - 1,
+      Math.max(0, this.zoomStepIndex + direction)
+    );
+    if (nextIndex === this.zoomStepIndex) return;
+
+    this.zoomStepIndex = nextIndex;
+    const zoom = ZOOM_STEPS[nextIndex];
+    const center = new fabric.Point(this.canvasSize / 2, this.canvasSize / 2);
+    this.canvas.zoomToPoint(center, zoom);
+
+    if (zoom === 1) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    } else {
+      this.clampPan();
+    }
+
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+    this.syncMinimap();
+  }
+
+  /**
+   * Reset to fit-zoom and recenter (used on room change)
+   */
+  private resetView(): void {
+    this.zoomStepIndex = 0;
+    if (this.canvas) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    }
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+    this.syncMinimap();
+  }
+
+  /**
+   * Disable each zoom button at its limit
+   */
+  private updateZoomButtons(): void {
+    if (this.zoomInButton) {
+      this.zoomInButton.disabled = this.zoomStepIndex >= ZOOM_STEPS.length - 1;
+    }
+    if (this.zoomOutButton) {
+      this.zoomOutButton.disabled = this.zoomStepIndex <= 0;
+    }
+  }
+
+  /**
+   * Build the minimap overlay (thumbnail + viewport rectangle), hidden until zoomed
+   */
+  private renderMinimap(): void {
+    if (!this.canvasContainerElement) return;
+
+    this.minimapElement = document.createElement('div');
+    this.minimapElement.className = 'floorplan-minimap';
+    this.minimapElement.style.width = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.height = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.display = 'none';
+
+    this.minimapImageElement = document.createElement('img');
+    this.minimapImageElement.className = 'floorplan-minimap-image';
+    this.minimapImageElement.alt = '';
+
+    this.minimapViewportElement = document.createElement('div');
+    this.minimapViewportElement.className = 'floorplan-minimap-viewport';
+
+    this.minimapElement.appendChild(this.minimapImageElement);
+    this.minimapElement.appendChild(this.minimapViewportElement);
+    this.canvasContainerElement.appendChild(this.minimapElement);
+  }
+
+  /**
+   * Snapshot the (vector-only) room into the minimap. MUST be called only at
+   * identity zoom — Fabric's toDataURL honors the viewportTransform, so a zoomed
+   * capture would store a cropped view. The background image is a DOM sibling, not
+   * on the canvas, so the export can't be CORS-tainted; guard regardless.
+   */
+  private captureMinimap(): void {
+    if (!this.canvas || !this.minimapImageElement) return;
+
+    try {
+      this.minimapImageElement.src = this.canvas.toDataURL({
+        format: 'png',
+        multiplier: MINIMAP_SIZE / this.canvasSize,
+      });
+      this.minimapAvailable = true;
+    } catch (error) {
+      // Minimap is optional chrome — degrade quietly, don't surface via onError
+      this.minimapAvailable = false;
+      if (this.minimapElement) {
+        this.minimapElement.style.display = 'none';
+      }
+      console.warn('[FloorplanRenderer] Minimap snapshot failed', error);
+    }
+  }
+
+  /**
+   * Show the minimap only while zoomed and move its viewport rectangle to match
+   * the current pan/zoom (reads the vpt; never re-snapshots)
+   */
+  private syncMinimap(): void {
+    if (!this.minimapElement || !this.canvas) return;
+
+    const zoom = this.canvas.getZoom();
+    const visible = this.minimapAvailable && zoom > 1;
+    this.minimapElement.style.display = visible ? 'block' : 'none';
+    if (!visible || !this.minimapViewportElement) return;
+
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+
+    const scale = MINIMAP_SIZE / this.canvasSize;
+    const size = MINIMAP_SIZE / zoom;
+    this.minimapViewportElement.style.width = `${size}px`;
+    this.minimapViewportElement.style.height = `${size}px`;
+    this.minimapViewportElement.style.left = `${(-vpt[4] / zoom) * scale}px`;
+    this.minimapViewportElement.style.top = `${(-vpt[5] / zoom) * scale}px`;
   }
 
   /**
@@ -274,6 +612,59 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Create a `$` badge for a table that incurs an up-front payment
+   */
+  private createPaymentLabel(table: Table): LabelGroup {
+    const config = LABEL_SIZE_CONFIG.very_small;
+
+    const textElement = new fabric.Text('$', {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: 'Inter, sans-serif',
+      fill: palette.white,
+      fontSize: config.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: 'center',
+    });
+
+    const circleSize = config.LINE_HEIGHT;
+
+    const labelRect = new fabric.Rect({
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      height: circleSize,
+      width: circleSize,
+      rx: circleSize / 2,
+      ry: circleSize / 2,
+      fill: palette.green100,
+      stroke: palette.green100,
+      strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+    });
+
+    return new LabelGroup([labelRect, textElement], {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      _relatedTableId: table.id,
+      _positionOnTable: 'bottom',
+    });
+  }
+
+  /**
+   * Create a centered name label for a non-emoji shape (e.g. "Burj Khalifa View")
+   */
+  private createShapeLabel(table: Table): fabric.Object {
+    return new fabric.Text(table.number, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: 'Inter, sans-serif',
+      fill: palette.dark100,
+      fontSize: LABEL_SIZE_CONFIG.very_small.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: 'center',
+    });
+  }
+
+  /**
    * Create a table object for rendering on canvas
    */
   private createTableObject(table: Table): {
@@ -294,6 +685,7 @@ export class FloorplanRenderer {
       const isBlocked = this.blockedTableIds.includes(table.id);
       const isSelected = this.selectedTableIds.includes(table.id);
       const isPreferred = this.preferredTableIds.includes(table.id);
+      const isPaid = this.paidTableIds.includes(table.id);
 
       // Table object options
       const tableObjectOptions = {
@@ -350,8 +742,13 @@ export class FloorplanRenderer {
         });
       }
 
-      // Create table group
-      const tableGroup = new TableGroup([tableObject], {
+      // Non-emoji shapes carry a centered name label that rotates with the group
+      const groupObjects: fabric.Object[] = [tableObject];
+      if (isShape && !isEmojiType && table.number) {
+        groupObjects.push(this.createShapeLabel(table));
+      }
+
+      const tableGroup = new TableGroup(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
         top,
@@ -362,14 +759,23 @@ export class FloorplanRenderer {
         hoverCursor: isTable && !isBlocked ? 'pointer' : 'default',
       });
 
+      // The bottom slot holds one badge: `$` takes precedence, else the preferred number
       let labelGroup: LabelGroup | null = null;
-      if (!isEmojiType && !isBlocked && isPreferred && isTable) {
-        labelGroup = this.createTableNumberLabel(table, isSelected);
+      if (!isEmojiType && !isBlocked && isTable) {
+        if (isPaid) {
+          labelGroup = this.createPaymentLabel(table);
+        } else if (isPreferred) {
+          labelGroup = this.createTableNumberLabel(table, isSelected);
+        }
       }
 
       return { tableGroup, labelGroup };
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error(`Failed to create table: ${table.id}.`));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error(`Failed to create table: ${table.id}.`)
+      );
       return {
         tableGroup: new TableGroup([], { tableContext: table }),
         labelGroup: null,
@@ -425,12 +831,19 @@ export class FloorplanRenderer {
       );
     }
 
-    if (this.selectedRoom && this.selectedRoom.background_image_url) {
+    if (
+      this.showBackgroundImage &&
+      this.selectedRoom &&
+      this.selectedRoom.background_image_url
+    ) {
       this.backgroundElement.style.backgroundImage = `url(${this.selectedRoom.background_image_url})`;
     } else {
-      // Clear background image if not set
+      // Clear background image when hidden or not set
       this.backgroundElement.style.backgroundImage = '';
     }
+
+    // Keep the background locked to the current zoom/pan
+    this.syncBackgroundTransform();
   }
 
   /**
@@ -440,13 +853,24 @@ export class FloorplanRenderer {
     try {
       if (!this.canvas) return;
 
+      // Preserve zoom/pan across the clear + re-add (e.g. selecting while zoomed)
+      const vpt = this.canvas.viewportTransform
+        ? [...this.canvas.viewportTransform]
+        : null;
+
       this.canvas.clear();
+
+      if (vpt) {
+        this.canvas.setViewportTransform(vpt);
+      }
 
       this.updateBackgroundImage();
 
-      // Get tables from selected room
-      const tablesToRender =
-        (this.selectedRoom && this.selectedRoom.tables) || [];
+      // Get tables from selected room, optionally hiding emoji decor
+      const tablesToRender = (
+        (this.selectedRoom && this.selectedRoom.tables) ||
+        []
+      ).filter((table) => this.showEmojis || !isEmoji(table, floorEmojiList));
 
       // Sort tables by render order (shapes first, then emojis, then tables)
       const sortedTables = sortTablesByRenderOrder(
@@ -468,7 +892,11 @@ export class FloorplanRenderer {
 
       this.canvas.renderAll();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error('Failed to render floorplan.'));
+      this.emitError(
+        error instanceof Error
+          ? error
+          : new Error('Failed to render floorplan.')
+      );
     }
   }
 
@@ -494,14 +922,26 @@ export class FloorplanRenderer {
     // Re-render tabs to update active state
     this.renderTabs();
 
+    // A new room starts at fit-zoom, centered
+    this.resetView();
+
     // Re-render canvas
     this.render();
+
+    // Re-snapshot for the minimap (canvas is at identity zoom here)
+    this.captureMinimap();
   }
 
   /**
    * Destroy the renderer and clean up resources
    */
   public destroy(): void {
+    // Cancel any in-flight pan frame
+    if (this.panRafId !== null) {
+      cancelAnimationFrame(this.panRafId);
+      this.panRafId = null;
+    }
+
     // Dispose canvas
     if (this.canvas) {
       this.canvas.dispose();
@@ -525,5 +965,11 @@ export class FloorplanRenderer {
     this.canvasContainerElement = null;
     this.backgroundElement = null;
     this.canvasElement = null;
+    this.zoomControlsElement = null;
+    this.zoomInButton = null;
+    this.zoomOutButton = null;
+    this.minimapElement = null;
+    this.minimapImageElement = null;
+    this.minimapViewportElement = null;
   }
 }

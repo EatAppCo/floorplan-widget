@@ -76,6 +76,9 @@ var FLOOR_DEFAULT = {
 };
 var INVISIBLE_CHARACTER = "\u200E";
 var SCALE = 64;
+var ZOOM_STEPS = [1, 1.5, 2, 2.5];
+var DRAG_THRESHOLD = 5;
+var MINIMAP_SIZE = 120;
 var DISABLED_OBJECT_PROPERTIES = {
   selectable: false,
   evented: false,
@@ -379,13 +382,30 @@ var FloorplanRenderer = class {
     this.rooms = [];
     this.blockedTableIds = [];
     this.preferredTableIds = [];
+    this.paidTableIds = [];
     this.selectedTableIds = [];
     this.selectionMode = "multi";
+    this.maxSelectable = null;
+    this.showBackgroundImage = true;
+    this.showEmojis = true;
     this.selectedRoom = null;
     this.onTableClick = null;
     this.onRoomChange = null;
     this.onError = null;
     this.canvasSize = 0;
+    this.zoomControlsElement = null;
+    this.zoomInButton = null;
+    this.zoomOutButton = null;
+    this.minimapElement = null;
+    this.minimapImageElement = null;
+    this.minimapViewportElement = null;
+    this.minimapAvailable = true;
+    this.zoomStepIndex = 0;
+    this.isPanning = false;
+    this.lastPointer = null;
+    this.dragDistance = 0;
+    this.pendingPanDelta = null;
+    this.panRafId = null;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -398,15 +418,25 @@ var FloorplanRenderer = class {
     this.rooms = options.rooms || [];
     this.blockedTableIds = options.blockedTableIds || [];
     this.preferredTableIds = options.preferredTableIds || [];
+    this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || "multi";
+    this.maxSelectable = options.maxSelectable ?? null;
+    this.showBackgroundImage = options.showBackgroundImage ?? true;
+    this.showEmojis = options.showEmojis ?? true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
+    if (this.maxSelectable !== null) {
+      this.selectedTableIds = this.selectedTableIds.slice(
+        0,
+        this.maxSelectable
+      );
+    }
     if (this.rooms.length === 0) {
       this.emitError(new Error("No rooms available."));
       return;
     }
-    this.selectedRoom = this.rooms[0];
+    this.selectedRoom = this.rooms.find((room) => room.id === options.initialRoomId) || this.rooms[0];
     this.initialize();
   }
   /**
@@ -416,6 +446,12 @@ var FloorplanRenderer = class {
     if (this.onError) {
       this.onError(error);
     }
+  }
+  /**
+   * Whether the multi-select cap has been reached
+   */
+  atSelectionLimit() {
+    return this.maxSelectable !== null && this.selectedTableIds.length >= this.maxSelectable;
   }
   /**
    * Initialize the canvas and render the floorplan
@@ -447,8 +483,14 @@ var FloorplanRenderer = class {
       });
       this.setupEventHandlers();
       this.render();
+      this.renderZoomControls();
+      this.renderMinimap();
+      this.captureMinimap();
+      this.syncMinimap();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error("Failed to initialize floorplan."));
+      this.emitError(
+        error instanceof Error ? error : new Error("Failed to initialize floorplan.")
+      );
     }
   }
   /**
@@ -463,36 +505,277 @@ var FloorplanRenderer = class {
     }
   }
   /**
-   * Set up canvas event handlers
+   * Set up canvas event handlers. Pointer down/move/up drive drag-pan (when zoomed)
+   * and, on a non-drag release, table selection.
    */
   setupEventHandlers() {
     if (!this.canvas) return;
-    this.canvas.on("mouse:up", (event) => {
-      try {
-        const target = event.target;
-        if (target && target instanceof TableGroup_default) {
-          const table = target.tableContext;
-          if (table && table.type === "Table") {
-            if (this.selectionMode === "single") {
-              this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
-            } else {
-              const tableIndex = this.selectedTableIds.indexOf(table.id);
-              if (tableIndex === -1) {
-                this.selectedTableIds.push(table.id);
-              } else {
-                this.selectedTableIds.splice(tableIndex, 1);
-              }
-            }
-            this.render();
-            if (this.onTableClick) {
-              this.onTableClick(table, [...this.selectedTableIds]);
-            }
-          }
+    this.canvas.on(
+      "mouse:down",
+      (opt) => this.onPointerDown(opt)
+    );
+    this.canvas.on(
+      "mouse:move",
+      (opt) => this.onPointerMove(opt)
+    );
+    this.canvas.on(
+      "mouse:up",
+      (opt) => this.onPointerUp(opt)
+    );
+  }
+  /**
+   * Screen-space coordinates of a mouse or touch pointer event
+   */
+  pointerXY(e) {
+    if ("touches" in e) {
+      const touch = e.touches[0] || e.changedTouches[0];
+      return touch ? { x: touch.clientX, y: touch.clientY } : { x: 0, y: 0 };
+    }
+    return { x: e.clientX, y: e.clientY };
+  }
+  onPointerDown(opt) {
+    this.lastPointer = this.pointerXY(opt.e);
+    this.dragDistance = 0;
+    this.isPanning = this.currentZoom() > 1;
+  }
+  onPointerMove(opt) {
+    if (!this.lastPointer) return;
+    const xy = this.pointerXY(opt.e);
+    const dx = xy.x - this.lastPointer.x;
+    const dy = xy.y - this.lastPointer.y;
+    this.dragDistance += Math.abs(dx) + Math.abs(dy);
+    this.lastPointer = xy;
+    if (this.isPanning) {
+      opt.e.preventDefault();
+      this.schedulePan(dx, dy);
+    }
+  }
+  onPointerUp(opt) {
+    const wasDrag = this.dragDistance > DRAG_THRESHOLD;
+    this.lastPointer = null;
+    this.isPanning = false;
+    this.dragDistance = 0;
+    if (!wasDrag) {
+      this.handleTableSelect(opt);
+    }
+  }
+  /**
+   * Toggle the pressed table's selection and notify the host
+   */
+  handleTableSelect(opt) {
+    try {
+      const target = opt.target;
+      if (!(target instanceof TableGroup_default)) return;
+      const table = target.tableContext;
+      if (!table || table.type !== "Table") return;
+      if (this.selectionMode === "single") {
+        this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
+      } else {
+        const tableIndex = this.selectedTableIds.indexOf(table.id);
+        if (tableIndex !== -1) {
+          this.selectedTableIds.splice(tableIndex, 1);
+        } else if (this.atSelectionLimit()) {
+          return;
+        } else {
+          this.selectedTableIds.push(table.id);
         }
-      } catch (error) {
-        this.emitError(error instanceof Error ? error : new Error("Error handling table click."));
       }
+      this.render();
+      if (this.onTableClick) {
+        this.onTableClick(table, [...this.selectedTableIds]);
+      }
+    } catch (error) {
+      this.emitError(
+        error instanceof Error ? error : new Error("Error handling table click.")
+      );
+    }
+  }
+  /**
+   * Current canvas zoom (1 = fit)
+   */
+  currentZoom() {
+    return this.canvas ? this.canvas.getZoom() : 1;
+  }
+  /**
+   * Apply a pan delta on the next frame, coalescing pointer events to one
+   * viewport write per frame (Fabric pan is main-thread heavy on large rooms)
+   */
+  schedulePan(dx, dy) {
+    this.pendingPanDelta = {
+      x: (this.pendingPanDelta?.x || 0) + dx,
+      y: (this.pendingPanDelta?.y || 0) + dy
+    };
+    if (this.panRafId !== null) return;
+    this.panRafId = requestAnimationFrame(() => {
+      this.panRafId = null;
+      const delta = this.pendingPanDelta;
+      this.pendingPanDelta = null;
+      if (!delta || !this.canvas) return;
+      this.canvas.relativePan(new import_fabric.fabric.Point(delta.x, delta.y));
+      this.clampPan();
+      this.syncBackgroundTransform();
+      this.syncMinimap();
     });
+  }
+  /**
+   * Keep the panned viewport within the room bounds (no empty gutters)
+   */
+  clampPan() {
+    if (!this.canvas) return;
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+    const min = this.canvasSize * (1 - this.canvas.getZoom());
+    vpt[4] = Math.min(0, Math.max(min, vpt[4]));
+    vpt[5] = Math.min(0, Math.max(min, vpt[5]));
+    this.canvas.setViewportTransform(vpt);
+  }
+  /**
+   * Mirror the canvas viewport onto the sibling background div. The image stays
+   * a DOM div (not a canvas background) so the L3 minimap's toDataURL can't be
+   * CORS-tainted by the CDN image.
+   */
+  syncBackgroundTransform() {
+    if (!this.backgroundElement || !this.canvas) return;
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+    this.backgroundElement.style.transform = `translate(${vpt[4]}px, ${vpt[5]}px) scale(${vpt[0]})`;
+  }
+  /**
+   * Render the zoom in/out buttons over the canvas
+   */
+  renderZoomControls() {
+    if (!this.canvasContainerElement) return;
+    this.zoomControlsElement = document.createElement("div");
+    this.zoomControlsElement.className = "floorplan-zoom-controls";
+    this.zoomInButton = this.createZoomButton(
+      "+",
+      "Zoom in",
+      () => this.stepZoom(1)
+    );
+    this.zoomOutButton = this.createZoomButton(
+      "\u2212",
+      "Zoom out",
+      () => this.stepZoom(-1)
+    );
+    this.zoomControlsElement.appendChild(this.zoomInButton);
+    this.zoomControlsElement.appendChild(this.zoomOutButton);
+    this.canvasContainerElement.appendChild(this.zoomControlsElement);
+    this.updateZoomButtons();
+  }
+  createZoomButton(label, ariaLabel, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "floorplan-zoom-button";
+    button.textContent = label;
+    button.setAttribute("aria-label", ariaLabel);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+  /**
+   * Step the zoom one level, then recenter (at fit) or clamp the viewport
+   */
+  stepZoom(direction) {
+    if (!this.canvas) return;
+    const nextIndex = Math.min(
+      ZOOM_STEPS.length - 1,
+      Math.max(0, this.zoomStepIndex + direction)
+    );
+    if (nextIndex === this.zoomStepIndex) return;
+    this.zoomStepIndex = nextIndex;
+    const zoom = ZOOM_STEPS[nextIndex];
+    const center = new import_fabric.fabric.Point(this.canvasSize / 2, this.canvasSize / 2);
+    this.canvas.zoomToPoint(center, zoom);
+    if (zoom === 1) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    } else {
+      this.clampPan();
+    }
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+    this.syncMinimap();
+  }
+  /**
+   * Reset to fit-zoom and recenter (used on room change)
+   */
+  resetView() {
+    this.zoomStepIndex = 0;
+    if (this.canvas) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    }
+    this.syncBackgroundTransform();
+    this.updateZoomButtons();
+    this.syncMinimap();
+  }
+  /**
+   * Disable each zoom button at its limit
+   */
+  updateZoomButtons() {
+    if (this.zoomInButton) {
+      this.zoomInButton.disabled = this.zoomStepIndex >= ZOOM_STEPS.length - 1;
+    }
+    if (this.zoomOutButton) {
+      this.zoomOutButton.disabled = this.zoomStepIndex <= 0;
+    }
+  }
+  /**
+   * Build the minimap overlay (thumbnail + viewport rectangle), hidden until zoomed
+   */
+  renderMinimap() {
+    if (!this.canvasContainerElement) return;
+    this.minimapElement = document.createElement("div");
+    this.minimapElement.className = "floorplan-minimap";
+    this.minimapElement.style.width = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.height = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.display = "none";
+    this.minimapImageElement = document.createElement("img");
+    this.minimapImageElement.className = "floorplan-minimap-image";
+    this.minimapImageElement.alt = "";
+    this.minimapViewportElement = document.createElement("div");
+    this.minimapViewportElement.className = "floorplan-minimap-viewport";
+    this.minimapElement.appendChild(this.minimapImageElement);
+    this.minimapElement.appendChild(this.minimapViewportElement);
+    this.canvasContainerElement.appendChild(this.minimapElement);
+  }
+  /**
+   * Snapshot the (vector-only) room into the minimap. MUST be called only at
+   * identity zoom — Fabric's toDataURL honors the viewportTransform, so a zoomed
+   * capture would store a cropped view. The background image is a DOM sibling, not
+   * on the canvas, so the export can't be CORS-tainted; guard regardless.
+   */
+  captureMinimap() {
+    if (!this.canvas || !this.minimapImageElement) return;
+    try {
+      this.minimapImageElement.src = this.canvas.toDataURL({
+        format: "png",
+        multiplier: MINIMAP_SIZE / this.canvasSize
+      });
+      this.minimapAvailable = true;
+    } catch (error) {
+      this.minimapAvailable = false;
+      if (this.minimapElement) {
+        this.minimapElement.style.display = "none";
+      }
+      console.warn("[FloorplanRenderer] Minimap snapshot failed", error);
+    }
+  }
+  /**
+   * Show the minimap only while zoomed and move its viewport rectangle to match
+   * the current pan/zoom (reads the vpt; never re-snapshots)
+   */
+  syncMinimap() {
+    if (!this.minimapElement || !this.canvas) return;
+    const zoom = this.canvas.getZoom();
+    const visible = this.minimapAvailable && zoom > 1;
+    this.minimapElement.style.display = visible ? "block" : "none";
+    if (!visible || !this.minimapViewportElement) return;
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+    const scale = MINIMAP_SIZE / this.canvasSize;
+    const size = MINIMAP_SIZE / zoom;
+    this.minimapViewportElement.style.width = `${size}px`;
+    this.minimapViewportElement.style.height = `${size}px`;
+    this.minimapViewportElement.style.left = `${-vpt[4] / zoom * scale}px`;
+    this.minimapViewportElement.style.top = `${-vpt[5] / zoom * scale}px`;
   }
   /**
    * Render room tabs
@@ -557,6 +840,53 @@ var FloorplanRenderer = class {
     });
   }
   /**
+   * Create a `$` badge for a table that incurs an up-front payment
+   */
+  createPaymentLabel(table) {
+    const config = LABEL_SIZE_CONFIG.very_small;
+    const textElement = new import_fabric.fabric.Text("$", {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: "Inter, sans-serif",
+      fill: palette.white,
+      fontSize: config.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: "center"
+    });
+    const circleSize = config.LINE_HEIGHT;
+    const labelRect = new import_fabric.fabric.Rect({
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      height: circleSize,
+      width: circleSize,
+      rx: circleSize / 2,
+      ry: circleSize / 2,
+      fill: palette.green100,
+      stroke: palette.green100,
+      strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH
+    });
+    return new LabelGroup_default([labelRect, textElement], {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      _relatedTableId: table.id,
+      _positionOnTable: "bottom"
+    });
+  }
+  /**
+   * Create a centered name label for a non-emoji shape (e.g. "Burj Khalifa View")
+   */
+  createShapeLabel(table) {
+    return new import_fabric.fabric.Text(table.number, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      fontFamily: "Inter, sans-serif",
+      fill: palette.dark100,
+      fontSize: LABEL_SIZE_CONFIG.very_small.TEXT_FONT_SIZE,
+      lineHeight: 1,
+      textAlign: "center"
+    });
+  }
+  /**
    * Create a table object for rendering on canvas
    */
   createTableObject(table) {
@@ -573,6 +903,7 @@ var FloorplanRenderer = class {
       const isBlocked = this.blockedTableIds.includes(table.id);
       const isSelected = this.selectedTableIds.includes(table.id);
       const isPreferred = this.preferredTableIds.includes(table.id);
+      const isPaid = this.paidTableIds.includes(table.id);
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
         strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
@@ -602,7 +933,11 @@ var FloorplanRenderer = class {
           ...tableObjectOptions
         });
       }
-      const tableGroup = new TableGroup_default([tableObject], {
+      const groupObjects = [tableObject];
+      if (isShape && !isEmojiType && table.number) {
+        groupObjects.push(this.createShapeLabel(table));
+      }
+      const tableGroup = new TableGroup_default(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
         top,
@@ -613,12 +948,18 @@ var FloorplanRenderer = class {
         hoverCursor: isTable && !isBlocked ? "pointer" : "default"
       });
       let labelGroup = null;
-      if (!isEmojiType && !isBlocked && isPreferred && isTable) {
-        labelGroup = this.createTableNumberLabel(table, isSelected);
+      if (!isEmojiType && !isBlocked && isTable) {
+        if (isPaid) {
+          labelGroup = this.createPaymentLabel(table);
+        } else if (isPreferred) {
+          labelGroup = this.createTableNumberLabel(table, isSelected);
+        }
       }
       return { tableGroup, labelGroup };
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error(`Failed to create table: ${table.id}.`));
+      this.emitError(
+        error instanceof Error ? error : new Error(`Failed to create table: ${table.id}.`)
+      );
       return {
         tableGroup: new TableGroup_default([], { tableContext: table }),
         labelGroup: null
@@ -660,11 +1001,12 @@ var FloorplanRenderer = class {
         fabricCanvasContainer.firstChild
       );
     }
-    if (this.selectedRoom && this.selectedRoom.background_image_url) {
+    if (this.showBackgroundImage && this.selectedRoom && this.selectedRoom.background_image_url) {
       this.backgroundElement.style.backgroundImage = `url(${this.selectedRoom.background_image_url})`;
     } else {
       this.backgroundElement.style.backgroundImage = "";
     }
+    this.syncBackgroundTransform();
   }
   /**
    * Render all tables on the canvas
@@ -672,9 +1014,13 @@ var FloorplanRenderer = class {
   render() {
     try {
       if (!this.canvas) return;
+      const vpt = this.canvas.viewportTransform ? [...this.canvas.viewportTransform] : null;
       this.canvas.clear();
+      if (vpt) {
+        this.canvas.setViewportTransform(vpt);
+      }
       this.updateBackgroundImage();
-      const tablesToRender = this.selectedRoom && this.selectedRoom.tables || [];
+      const tablesToRender = (this.selectedRoom && this.selectedRoom.tables || []).filter((table) => this.showEmojis || !isEmoji(table, floorEmojiList));
       const sortedTables = sortTablesByRenderOrder(
         tablesToRender,
         floorEmojiList
@@ -689,7 +1035,9 @@ var FloorplanRenderer = class {
       });
       this.canvas.renderAll();
     } catch (error) {
-      this.emitError(error instanceof Error ? error : new Error("Failed to render floorplan."));
+      this.emitError(
+        error instanceof Error ? error : new Error("Failed to render floorplan.")
+      );
     }
   }
   /**
@@ -707,12 +1055,18 @@ var FloorplanRenderer = class {
       this.onRoomChange(room);
     }
     this.renderTabs();
+    this.resetView();
     this.render();
+    this.captureMinimap();
   }
   /**
    * Destroy the renderer and clean up resources
    */
   destroy() {
+    if (this.panRafId !== null) {
+      cancelAnimationFrame(this.panRafId);
+      this.panRafId = null;
+    }
     if (this.canvas) {
       this.canvas.dispose();
       this.canvas = null;
@@ -731,6 +1085,12 @@ var FloorplanRenderer = class {
     this.canvasContainerElement = null;
     this.backgroundElement = null;
     this.canvasElement = null;
+    this.zoomControlsElement = null;
+    this.zoomInButton = null;
+    this.zoomOutButton = null;
+    this.minimapElement = null;
+    this.minimapImageElement = null;
+    this.minimapViewportElement = null;
   }
 };
 // Annotate the CommonJS export names for ESM import in node:
