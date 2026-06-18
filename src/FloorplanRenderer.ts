@@ -27,6 +27,7 @@ import {
   DISABLED_OBJECT_PROPERTIES,
   DRAG_THRESHOLD,
   LABEL_SIZE_CONFIG,
+  MINIMAP_SIZE,
   ZOOM_STEPS,
 } from './config/defaults';
 
@@ -54,6 +55,10 @@ export class FloorplanRenderer {
   private zoomControlsElement: HTMLElement | null = null;
   private zoomInButton: HTMLButtonElement | null = null;
   private zoomOutButton: HTMLButtonElement | null = null;
+  private minimapElement: HTMLElement | null = null;
+  private minimapImageElement: HTMLImageElement | null = null;
+  private minimapViewportElement: HTMLElement | null = null;
+  private minimapAvailable: boolean = true;
   private zoomStepIndex: number = 0;
   private isPanning: boolean = false;
   private lastPointer: { x: number; y: number } | null = null;
@@ -169,6 +174,9 @@ export class FloorplanRenderer {
       this.setupEventHandlers();
       this.render();
       this.renderZoomControls();
+      this.renderMinimap();
+      this.captureMinimap();
+      this.syncMinimap();
     } catch (error) {
       this.emitError(
         error instanceof Error
@@ -324,6 +332,7 @@ export class FloorplanRenderer {
       this.canvas.relativePan(new fabric.Point(delta.x, delta.y));
       this.clampPan();
       this.syncBackgroundTransform();
+      this.syncMinimap();
     });
   }
 
@@ -418,6 +427,7 @@ export class FloorplanRenderer {
 
     this.syncBackgroundTransform();
     this.updateZoomButtons();
+    this.syncMinimap();
   }
 
   /**
@@ -430,6 +440,7 @@ export class FloorplanRenderer {
     }
     this.syncBackgroundTransform();
     this.updateZoomButtons();
+    this.syncMinimap();
   }
 
   /**
@@ -442,6 +453,78 @@ export class FloorplanRenderer {
     if (this.zoomOutButton) {
       this.zoomOutButton.disabled = this.zoomStepIndex <= 0;
     }
+  }
+
+  /**
+   * Build the minimap overlay (thumbnail + viewport rectangle), hidden until zoomed
+   */
+  private renderMinimap(): void {
+    if (!this.canvasContainerElement) return;
+
+    this.minimapElement = document.createElement('div');
+    this.minimapElement.className = 'floorplan-minimap';
+    this.minimapElement.style.width = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.height = `${MINIMAP_SIZE}px`;
+    this.minimapElement.style.display = 'none';
+
+    this.minimapImageElement = document.createElement('img');
+    this.minimapImageElement.className = 'floorplan-minimap-image';
+    this.minimapImageElement.alt = '';
+
+    this.minimapViewportElement = document.createElement('div');
+    this.minimapViewportElement.className = 'floorplan-minimap-viewport';
+
+    this.minimapElement.appendChild(this.minimapImageElement);
+    this.minimapElement.appendChild(this.minimapViewportElement);
+    this.canvasContainerElement.appendChild(this.minimapElement);
+  }
+
+  /**
+   * Snapshot the (vector-only) room into the minimap. MUST be called only at
+   * identity zoom — Fabric's toDataURL honors the viewportTransform, so a zoomed
+   * capture would store a cropped view. The background image is a DOM sibling, not
+   * on the canvas, so the export can't be CORS-tainted; guard regardless.
+   */
+  private captureMinimap(): void {
+    if (!this.canvas || !this.minimapImageElement) return;
+
+    try {
+      this.minimapImageElement.src = this.canvas.toDataURL({
+        format: 'png',
+        multiplier: MINIMAP_SIZE / this.canvasSize,
+      });
+      this.minimapAvailable = true;
+    } catch (error) {
+      // Minimap is optional chrome — degrade quietly, don't surface via onError
+      this.minimapAvailable = false;
+      if (this.minimapElement) {
+        this.minimapElement.style.display = 'none';
+      }
+      console.warn('[FloorplanRenderer] Minimap snapshot failed', error);
+    }
+  }
+
+  /**
+   * Show the minimap only while zoomed and move its viewport rectangle to match
+   * the current pan/zoom (reads the vpt; never re-snapshots)
+   */
+  private syncMinimap(): void {
+    if (!this.minimapElement || !this.canvas) return;
+
+    const zoom = this.canvas.getZoom();
+    const visible = this.minimapAvailable && zoom > 1;
+    this.minimapElement.style.display = visible ? 'block' : 'none';
+    if (!visible || !this.minimapViewportElement) return;
+
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+
+    const scale = MINIMAP_SIZE / this.canvasSize;
+    const size = MINIMAP_SIZE / zoom;
+    this.minimapViewportElement.style.width = `${size}px`;
+    this.minimapViewportElement.style.height = `${size}px`;
+    this.minimapViewportElement.style.left = `${(-vpt[4] / zoom) * scale}px`;
+    this.minimapViewportElement.style.top = `${(-vpt[5] / zoom) * scale}px`;
   }
 
   /**
@@ -844,6 +927,9 @@ export class FloorplanRenderer {
 
     // Re-render canvas
     this.render();
+
+    // Re-snapshot for the minimap (canvas is at identity zoom here)
+    this.captureMinimap();
   }
 
   /**
@@ -882,5 +968,8 @@ export class FloorplanRenderer {
     this.zoomControlsElement = null;
     this.zoomInButton = null;
     this.zoomOutButton = null;
+    this.minimapElement = null;
+    this.minimapImageElement = null;
+    this.minimapViewportElement = null;
   }
 }

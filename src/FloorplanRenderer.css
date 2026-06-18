@@ -109,3 +109,31 @@
   color: #cccccc;
   cursor: default;
 }
+
+.floorplan-minimap {
+  position: absolute;
+  top: 16px;
+  inset-inline-start: 16px;
+  overflow: hidden;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  background-color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  z-index: 2;
+}
+
+.floorplan-minimap-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.floorplan-minimap-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  border: 2px solid #128849;
+  background-color: rgba(18, 136, 73, 0.12);
+}

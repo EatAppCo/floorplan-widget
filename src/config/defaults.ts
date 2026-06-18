@@ -55,6 +55,11 @@ export const ZOOM_STEPS = [1, 1.5, 2, 2.5] as const;
 export const DRAG_THRESHOLD = 5;
 
 /**
+ * Side length (px) of the navigation minimap shown while zoomed in
+ */
+export const MINIMAP_SIZE = 120;
+
+/**
  * Common properties for non-interactive Fabric objects
  */
 export const DISABLED_OBJECT_PROPERTIES = {
