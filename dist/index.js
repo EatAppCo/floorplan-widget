@@ -406,6 +406,7 @@ var FloorplanRenderer = class {
     this.dragDistance = 0;
     this.pendingPanDelta = null;
     this.panRafId = null;
+    var _a, _b, _c;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -420,9 +421,9 @@ var FloorplanRenderer = class {
     this.preferredTableIds = options.preferredTableIds || [];
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || "multi";
-    this.maxSelectable = options.maxSelectable ?? null;
-    this.showBackgroundImage = options.showBackgroundImage ?? true;
-    this.showEmojis = options.showEmojis ?? true;
+    this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
+    this.showBackgroundImage = (_b = options.showBackgroundImage) != null ? _b : true;
+    this.showEmojis = (_c = options.showEmojis) != null ? _c : true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
@@ -601,9 +602,10 @@ var FloorplanRenderer = class {
    * viewport write per frame (Fabric pan is main-thread heavy on large rooms)
    */
   schedulePan(dx, dy) {
+    var _a, _b;
     this.pendingPanDelta = {
-      x: (this.pendingPanDelta?.x || 0) + dx,
-      y: (this.pendingPanDelta?.y || 0) + dy
+      x: (((_a = this.pendingPanDelta) == null ? void 0 : _a.x) || 0) + dx,
+      y: (((_b = this.pendingPanDelta) == null ? void 0 : _b.y) || 0) + dy
     };
     if (this.panRafId !== null) return;
     this.panRafId = requestAnimationFrame(() => {
