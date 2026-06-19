@@ -615,6 +615,7 @@ var FloorplanRenderer = class {
       if (!delta || !this.canvas) return;
       this.canvas.relativePan(new import_fabric.fabric.Point(delta.x, delta.y));
       this.clampPan();
+      this.canvas.requestRenderAll();
       this.syncBackgroundTransform();
       this.syncMinimap();
     });
@@ -659,8 +660,8 @@ var FloorplanRenderer = class {
       "Zoom out",
       () => this.stepZoom(-1)
     );
-    this.zoomControlsElement.appendChild(this.zoomInButton);
     this.zoomControlsElement.appendChild(this.zoomOutButton);
+    this.zoomControlsElement.appendChild(this.zoomInButton);
     this.canvasContainerElement.appendChild(this.zoomControlsElement);
     this.updateZoomButtons();
   }
@@ -692,6 +693,7 @@ var FloorplanRenderer = class {
     } else {
       this.clampPan();
     }
+    this.canvas.requestRenderAll();
     this.syncBackgroundTransform();
     this.updateZoomButtons();
     this.syncMinimap();
@@ -703,6 +705,7 @@ var FloorplanRenderer = class {
     this.zoomStepIndex = 0;
     if (this.canvas) {
       this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      this.canvas.requestRenderAll();
     }
     this.syncBackgroundTransform();
     this.updateZoomButtons();
@@ -850,7 +853,7 @@ var FloorplanRenderer = class {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       fontFamily: "Inter, sans-serif",
-      fill: palette.white,
+      fill: palette.green100,
       fontSize: config.TEXT_FONT_SIZE,
       lineHeight: 1,
       textAlign: "center"
@@ -863,7 +866,7 @@ var FloorplanRenderer = class {
       width: circleSize,
       rx: circleSize / 2,
       ry: circleSize / 2,
-      fill: palette.green100,
+      fill: palette.white,
       stroke: palette.green100,
       strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH
     });
@@ -871,7 +874,7 @@ var FloorplanRenderer = class {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       _relatedTableId: table.id,
-      _positionOnTable: "bottom"
+      _positionOnTable: "corner"
     });
   }
   /**
@@ -912,7 +915,7 @@ var FloorplanRenderer = class {
         rx: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(width) / 2,
         ry: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(height) / 2,
         strokeUniform: true,
-        stroke: isShape ? "transparent" : isBlocked ? "#dddddd" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke,
+        stroke: isShape ? "transparent" : isBlocked ? "transparent" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke,
         fill: isEmojiType ? "transparent" : isBlocked ? DEFAULT_TABLE_PALETTE.blocked : isSelected ? DEFAULT_TABLE_PALETTE.selectedFill : isShape ? color || "transparent" : DEFAULT_TABLE_PALETTE.fill,
         perPixelTargetFind: true
       };
@@ -974,6 +977,13 @@ var FloorplanRenderer = class {
   positionLabel(tableGroup, labelGroup) {
     const boundingRect = tableGroup.getBoundingRect();
     const isShape = tableGroup.tableContext.type === "Shape";
+    if (labelGroup._positionOnTable === "corner") {
+      labelGroup.set({
+        top: boundingRect.top + boundingRect.height,
+        left: boundingRect.left + boundingRect.width
+      });
+      return;
+    }
     const adjustedHeight = isShape ? boundingRect.height / 2 : boundingRect.height - FLOOR_DEFAULT.STROKE_WIDTH / 2;
     labelGroup.set({
       top: boundingRect.top + adjustedHeight,
