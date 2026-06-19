@@ -331,6 +331,7 @@ export class FloorplanRenderer {
 
       this.canvas.relativePan(new fabric.Point(delta.x, delta.y));
       this.clampPan();
+      this.canvas.requestRenderAll();
       this.syncBackgroundTransform();
       this.syncMinimap();
     });
@@ -381,8 +382,8 @@ export class FloorplanRenderer {
       this.stepZoom(-1)
     );
 
-    this.zoomControlsElement.appendChild(this.zoomInButton);
     this.zoomControlsElement.appendChild(this.zoomOutButton);
+    this.zoomControlsElement.appendChild(this.zoomInButton);
     this.canvasContainerElement.appendChild(this.zoomControlsElement);
 
     this.updateZoomButtons();
@@ -425,6 +426,9 @@ export class FloorplanRenderer {
       this.clampPan();
     }
 
+    // zoomToPoint/setViewportTransform don't repaint when renderOnAddRemove is
+    // false (fabric.js:9578), so the canvas stays still without an explicit render
+    this.canvas.requestRenderAll();
     this.syncBackgroundTransform();
     this.updateZoomButtons();
     this.syncMinimap();
@@ -437,6 +441,7 @@ export class FloorplanRenderer {
     this.zoomStepIndex = 0;
     if (this.canvas) {
       this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      this.canvas.requestRenderAll();
     }
     this.syncBackgroundTransform();
     this.updateZoomButtons();
@@ -621,7 +626,7 @@ export class FloorplanRenderer {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       fontFamily: 'Inter, sans-serif',
-      fill: palette.white,
+      fill: palette.green100,
       fontSize: config.TEXT_FONT_SIZE,
       lineHeight: 1,
       textAlign: 'center',
@@ -629,6 +634,7 @@ export class FloorplanRenderer {
 
     const circleSize = config.LINE_HEIGHT;
 
+    // White circle, green ring + green `$` (per Figma), straddling the table corner
     const labelRect = new fabric.Rect({
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
@@ -636,7 +642,7 @@ export class FloorplanRenderer {
       width: circleSize,
       rx: circleSize / 2,
       ry: circleSize / 2,
-      fill: palette.green100,
+      fill: palette.white,
       stroke: palette.green100,
       strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
     });
@@ -645,7 +651,7 @@ export class FloorplanRenderer {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       _relatedTableId: table.id,
-      _positionOnTable: 'bottom',
+      _positionOnTable: 'corner',
     });
   }
 
@@ -705,7 +711,7 @@ export class FloorplanRenderer {
         stroke: isShape
           ? 'transparent'
           : isBlocked
-            ? '#dddddd'
+            ? 'transparent'
             : isSelected
               ? DEFAULT_TABLE_PALETTE.selectedStroke
               : DEFAULT_TABLE_PALETTE.stroke,
@@ -789,6 +795,15 @@ export class FloorplanRenderer {
   private positionLabel(tableGroup: TableGroup, labelGroup: LabelGroup): void {
     const boundingRect = tableGroup.getBoundingRect();
     const isShape = tableGroup.tableContext.type === 'Shape';
+
+    // The `$` badge straddles the table's bottom-right corner (per Figma)
+    if (labelGroup._positionOnTable === 'corner') {
+      labelGroup.set({
+        top: boundingRect.top + boundingRect.height,
+        left: boundingRect.left + boundingRect.width,
+      });
+      return;
+    }
 
     const adjustedHeight = isShape
       ? boundingRect.height / 2

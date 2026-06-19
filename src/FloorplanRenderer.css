@@ -79,7 +79,7 @@
   bottom: 16px;
   inset-inline-end: 16px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
   z-index: 2;
 }
@@ -92,7 +92,7 @@
   height: 36px;
   padding: 0;
   border: 1px solid #d8d8d8;
-  border-radius: 8px;
+  border-radius: 50%;
   background-color: #fff;
   color: #34353a;
   font-size: 20px;
