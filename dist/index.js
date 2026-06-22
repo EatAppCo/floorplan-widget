@@ -495,15 +495,15 @@ var FloorplanRenderer = class {
     }
   }
   /**
-   * Calculate and update canvas size based on canvas container element
+   * Size the (square) canvas to the smaller of the container's two dimensions so it always fits
+   * its host. Falls back to the minimum only when the container is unmeasured (0×0 before layout) —
+   * a forced minimum would overflow a narrow host (e.g. the admin preview panel) and clip the plan.
    */
   updateCanvasSize() {
     if (!this.canvasContainerElement) return;
     const containerRect = this.canvasContainerElement.getBoundingClientRect();
-    this.canvasSize = Math.min(containerRect.width, containerRect.height);
-    if (this.canvasSize < FLOOR_DEFAULT.CANVAS_MIN_SIZE) {
-      this.canvasSize = FLOOR_DEFAULT.CANVAS_MIN_SIZE;
-    }
+    const size = Math.min(containerRect.width, containerRect.height);
+    this.canvasSize = size > 0 ? size : FLOOR_DEFAULT.CANVAS_MIN_SIZE;
   }
   /**
    * Set up canvas event handlers. Pointer down/move/up drive drag-pan (when zoomed)
