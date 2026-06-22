@@ -65,6 +65,8 @@ export class FloorplanRenderer {
   private dragDistance: number = 0;
   private pendingPanDelta: { x: number; y: number } | null = null;
   private panRafId: number | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeRafId: number | null = null;
 
   constructor(options: FloorplanRendererOptions) {
     // Set callbacks
@@ -177,6 +179,7 @@ export class FloorplanRenderer {
       this.renderMinimap();
       this.captureMinimap();
       this.syncMinimap();
+      this.observeResize();
     } catch (error) {
       this.emitError(
         error instanceof Error
@@ -198,6 +201,53 @@ export class FloorplanRenderer {
     const size = Math.min(containerRect.width, containerRect.height);
 
     this.canvasSize = size > 0 ? size : FLOOR_DEFAULT.CANVAS_MIN_SIZE;
+  }
+
+  /**
+   * Keep the canvas fitted to its container as the host resizes it — e.g. when a summary panel
+   * below the plan expands and shrinks the plan's region, or the viewport rotates. Without this
+   * the square canvas keeps its initial pixel size and overflows the shrunken container, painting
+   * over sibling host content. Callbacks are coalesced into one animation frame so an animated
+   * resize doesn't thrash.
+   */
+  private observeResize(): void {
+    if (typeof ResizeObserver === 'undefined' || !this.canvasContainerElement) {
+      return;
+    }
+
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizeRafId !== null) return;
+
+      this.resizeRafId = requestAnimationFrame(() => {
+        this.resizeRafId = null;
+        this.handleResize();
+      });
+    });
+    this.resizeObserver.observe(this.canvasContainerElement);
+  }
+
+  /**
+   * Re-fit the canvas to the current container size. Object geometry is derived from canvasSize,
+   * so a changed size means resizing the Fabric canvas and re-laying the plan, then refitting the
+   * view and re-snapshotting the minimap (mirrors the room-change path). A no-op when the fitted
+   * size is unchanged, so the ResizeObserver can't loop.
+   */
+  private handleResize(): void {
+    if (!this.canvas || !this.canvasContainerElement) return;
+
+    const previousSize = this.canvasSize;
+    this.updateCanvasSize();
+
+    if (this.canvasSize === previousSize || this.canvasSize <= 0) return;
+
+    this.canvas.setDimensions({
+      width: this.canvasSize,
+      height: this.canvasSize,
+    });
+
+    this.resetView();
+    this.render();
+    this.captureMinimap();
   }
 
   /**
@@ -951,6 +1001,16 @@ export class FloorplanRenderer {
    * Destroy the renderer and clean up resources
    */
   public destroy(): void {
+    // Stop reacting to container resizes
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+    if (this.resizeRafId !== null) {
+      cancelAnimationFrame(this.resizeRafId);
+      this.resizeRafId = null;
+    }
+
     // Cancel any in-flight pan frame
     if (this.panRafId !== null) {
       cancelAnimationFrame(this.panRafId);

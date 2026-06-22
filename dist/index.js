@@ -406,6 +406,8 @@ var FloorplanRenderer = class {
     this.dragDistance = 0;
     this.pendingPanDelta = null;
     this.panRafId = null;
+    this.resizeObserver = null;
+    this.resizeRafId = null;
     var _a, _b, _c;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
@@ -488,6 +490,7 @@ var FloorplanRenderer = class {
       this.renderMinimap();
       this.captureMinimap();
       this.syncMinimap();
+      this.observeResize();
     } catch (error) {
       this.emitError(
         error instanceof Error ? error : new Error("Failed to initialize floorplan.")
@@ -504,6 +507,45 @@ var FloorplanRenderer = class {
     const containerRect = this.canvasContainerElement.getBoundingClientRect();
     const size = Math.min(containerRect.width, containerRect.height);
     this.canvasSize = size > 0 ? size : FLOOR_DEFAULT.CANVAS_MIN_SIZE;
+  }
+  /**
+   * Keep the canvas fitted to its container as the host resizes it — e.g. when a summary panel
+   * below the plan expands and shrinks the plan's region, or the viewport rotates. Without this
+   * the square canvas keeps its initial pixel size and overflows the shrunken container, painting
+   * over sibling host content. Callbacks are coalesced into one animation frame so an animated
+   * resize doesn't thrash.
+   */
+  observeResize() {
+    if (typeof ResizeObserver === "undefined" || !this.canvasContainerElement) {
+      return;
+    }
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizeRafId !== null) return;
+      this.resizeRafId = requestAnimationFrame(() => {
+        this.resizeRafId = null;
+        this.handleResize();
+      });
+    });
+    this.resizeObserver.observe(this.canvasContainerElement);
+  }
+  /**
+   * Re-fit the canvas to the current container size. Object geometry is derived from canvasSize,
+   * so a changed size means resizing the Fabric canvas and re-laying the plan, then refitting the
+   * view and re-snapshotting the minimap (mirrors the room-change path). A no-op when the fitted
+   * size is unchanged, so the ResizeObserver can't loop.
+   */
+  handleResize() {
+    if (!this.canvas || !this.canvasContainerElement) return;
+    const previousSize = this.canvasSize;
+    this.updateCanvasSize();
+    if (this.canvasSize === previousSize || this.canvasSize <= 0) return;
+    this.canvas.setDimensions({
+      width: this.canvasSize,
+      height: this.canvasSize
+    });
+    this.resetView();
+    this.render();
+    this.captureMinimap();
   }
   /**
    * Set up canvas event handlers. Pointer down/move/up drive drag-pan (when zoomed)
@@ -1075,6 +1117,14 @@ var FloorplanRenderer = class {
    * Destroy the renderer and clean up resources
    */
   destroy() {
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+    if (this.resizeRafId !== null) {
+      cancelAnimationFrame(this.resizeRafId);
+      this.resizeRafId = null;
+    }
     if (this.panRafId !== null) {
       cancelAnimationFrame(this.panRafId);
       this.panRafId = null;
