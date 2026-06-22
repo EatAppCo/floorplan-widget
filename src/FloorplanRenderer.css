@@ -45,7 +45,13 @@
 
 .floorplan-canvas-container {
   position: relative;
-  display: block;
+  /* Center the square canvas within the region. The region is full-size (so it can be measured)
+     while the canvas is min(width, height) square, so without centering the canvas sits flush in
+     a corner with dead space beside it. Overlays (zoom controls, minimap) anchor to the canvas
+     wrapper itself, so they float on the canvas rather than the padded region. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   /* Cap the plan so it stays compact on wide hosts (the widget card is 768px on desktop) and
      center it — without this the square canvas scales up to the full width and the plan looks

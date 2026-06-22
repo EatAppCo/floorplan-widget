@@ -686,10 +686,22 @@ var FloorplanRenderer = class {
     this.backgroundElement.style.transform = `translate(${vpt[4]}px, ${vpt[5]}px) scale(${vpt[0]})`;
   }
   /**
+   * Fabric's canvas wrapper (.canvas-container) — the centered square that the overlays
+   * (background, zoom controls, minimap) anchor to, so they float on the canvas itself rather
+   * than the padded region around it. Falls back to the outer container if the wrapper is missing.
+   */
+  overlayMount() {
+    var _a, _b;
+    return (_b = (_a = this.canvasContainerElement) == null ? void 0 : _a.querySelector(
+      ".canvas-container"
+    )) != null ? _b : this.canvasContainerElement;
+  }
+  /**
    * Render the zoom in/out buttons over the canvas
    */
   renderZoomControls() {
-    if (!this.canvasContainerElement) return;
+    const mount = this.overlayMount();
+    if (!mount) return;
     this.zoomControlsElement = document.createElement("div");
     this.zoomControlsElement.className = "floorplan-zoom-controls";
     this.zoomInButton = this.createZoomButton(
@@ -704,7 +716,7 @@ var FloorplanRenderer = class {
     );
     this.zoomControlsElement.appendChild(this.zoomOutButton);
     this.zoomControlsElement.appendChild(this.zoomInButton);
-    this.canvasContainerElement.appendChild(this.zoomControlsElement);
+    mount.appendChild(this.zoomControlsElement);
     this.updateZoomButtons();
   }
   createZoomButton(label, ariaLabel, onClick) {
@@ -768,7 +780,8 @@ var FloorplanRenderer = class {
    * Build the minimap overlay (thumbnail + viewport rectangle), hidden until zoomed
    */
   renderMinimap() {
-    if (!this.canvasContainerElement) return;
+    const mount = this.overlayMount();
+    if (!mount) return;
     this.minimapElement = document.createElement("div");
     this.minimapElement.className = "floorplan-minimap";
     this.minimapElement.style.width = `${MINIMAP_SIZE}px`;
@@ -781,7 +794,7 @@ var FloorplanRenderer = class {
     this.minimapViewportElement.className = "floorplan-minimap-viewport";
     this.minimapElement.appendChild(this.minimapImageElement);
     this.minimapElement.appendChild(this.minimapViewportElement);
-    this.canvasContainerElement.appendChild(this.minimapElement);
+    mount.appendChild(this.minimapElement);
   }
   /**
    * Snapshot the (vector-only) room into the minimap. MUST be called only at

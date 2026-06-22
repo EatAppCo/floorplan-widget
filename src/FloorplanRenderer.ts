@@ -417,10 +417,24 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Fabric's canvas wrapper (.canvas-container) — the centered square that the overlays
+   * (background, zoom controls, minimap) anchor to, so they float on the canvas itself rather
+   * than the padded region around it. Falls back to the outer container if the wrapper is missing.
+   */
+  private overlayMount(): HTMLElement | null {
+    return (
+      (this.canvasContainerElement?.querySelector(
+        '.canvas-container'
+      ) as HTMLElement | null) ?? this.canvasContainerElement
+    );
+  }
+
+  /**
    * Render the zoom in/out buttons over the canvas
    */
   private renderZoomControls(): void {
-    if (!this.canvasContainerElement) return;
+    const mount = this.overlayMount();
+    if (!mount) return;
 
     this.zoomControlsElement = document.createElement('div');
     this.zoomControlsElement.className = 'floorplan-zoom-controls';
@@ -434,7 +448,7 @@ export class FloorplanRenderer {
 
     this.zoomControlsElement.appendChild(this.zoomOutButton);
     this.zoomControlsElement.appendChild(this.zoomInButton);
-    this.canvasContainerElement.appendChild(this.zoomControlsElement);
+    mount.appendChild(this.zoomControlsElement);
 
     this.updateZoomButtons();
   }
@@ -514,7 +528,8 @@ export class FloorplanRenderer {
    * Build the minimap overlay (thumbnail + viewport rectangle), hidden until zoomed
    */
   private renderMinimap(): void {
-    if (!this.canvasContainerElement) return;
+    const mount = this.overlayMount();
+    if (!mount) return;
 
     this.minimapElement = document.createElement('div');
     this.minimapElement.className = 'floorplan-minimap';
@@ -531,7 +546,7 @@ export class FloorplanRenderer {
 
     this.minimapElement.appendChild(this.minimapImageElement);
     this.minimapElement.appendChild(this.minimapViewportElement);
-    this.canvasContainerElement.appendChild(this.minimapElement);
+    mount.appendChild(this.minimapElement);
   }
 
   /**
