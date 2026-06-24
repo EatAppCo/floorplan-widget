@@ -45,6 +45,8 @@ export class FloorplanRenderer {
   private selectedTableIds: string[] = [];
   private selectionMode: 'single' | 'multi' = 'multi';
   private maxSelectable: number | null = null;
+  private covers: number = 0;
+  private tableGroups: string[][] = [];
   private showBackgroundImage: boolean = true;
   private showEmojis: boolean = true;
   private selectedRoom: Room | null = null;
@@ -89,6 +91,8 @@ export class FloorplanRenderer {
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || 'multi';
     this.maxSelectable = options.maxSelectable ?? null;
+    this.covers = options.covers ?? 0;
+    this.tableGroups = options.tableGroups || [];
     this.showBackgroundImage = options.showBackgroundImage ?? true;
     this.showEmojis = options.showEmojis ?? true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
@@ -132,6 +136,103 @@ export class FloorplanRenderer {
       this.maxSelectable !== null &&
       this.selectedTableIds.length >= this.maxSelectable
     );
+  }
+
+  /**
+   * Multi-select with linked-group support:
+   * - tapping a selected table clears it (or its whole group if it was an atomic group);
+   * - a table the party fits alone toggles as a single (respecting the cap);
+   * - a table too small alone auto-extends to the nearest eligible group, selected atomically.
+   */
+  private toggleMultiSelection(table: Table): void {
+    if (this.selectedTableIds.includes(table.id)) {
+      const group = this.selectedGroupContaining(table.id);
+      this.selectedTableIds = group
+        ? this.selectedTableIds.filter((id) => !group.includes(id))
+        : this.selectedTableIds.filter((id) => id !== table.id);
+      return;
+    }
+
+    if (this.fitsAlone(table)) {
+      if (!this.atSelectionLimit()) this.selectedTableIds.push(table.id);
+      return;
+    }
+
+    const group = this.nearestGroupContaining(table);
+    if (group) this.selectedTableIds = [...group];
+  }
+
+  /** Whether the party fits this single table (covers unknown ⇒ treat as fits, single behaviour). */
+  private fitsAlone(table: Table): boolean {
+    return this.covers === 0 || (table.max_covers ?? 0) >= this.covers;
+  }
+
+  /**
+   * The group that IS the current selection and contains `id`, matched EXACTLY (same length), so tapping any
+   * member clears the whole set. Exact match prevents an overlapping subset combo (e.g. [A,B] vs a selected
+   * [A,B,C]) from clearing only part of the group and leaving an invalid, non-combo remainder.
+   */
+  private selectedGroupContaining(id: string): string[] | null {
+    return (
+      this.tableGroups.find(
+        (group) =>
+          group.includes(id) &&
+          group.length === this.selectedTableIds.length &&
+          group.every((member) => this.selectedTableIds.includes(member))
+      ) || null
+    );
+  }
+
+  /**
+   * Defensive: `tableGroups` is meant to be host-prefiltered, but as a package API the renderer never
+   * auto-selects a combo with a member that isn't in the current room, is blocked, or exceeds the cap.
+   */
+  private groupIsSelectable(group: string[]): boolean {
+    if (this.maxSelectable !== null && group.length > this.maxSelectable)
+      return false;
+
+    const roomTableIds = (this.selectedRoom?.tables || [])
+      .filter((table) => table.type === 'Table')
+      .map((table) => table.id);
+
+    return group.every(
+      (id) => roomTableIds.includes(id) && !this.blockedTableIds.includes(id)
+    );
+  }
+
+  /** Nearest eligible group containing `table`: smallest max-distance to a member, then fewest tables, then ids. */
+  private nearestGroupContaining(table: Table): string[] | null {
+    const candidates = this.tableGroups.filter(
+      (group) => group.includes(table.id) && this.groupIsSelectable(group)
+    );
+    if (candidates.length === 0) return null;
+
+    return candidates.slice().sort((a, b) => {
+      const byDistance =
+        this.maxMemberDistance(table, a) - this.maxMemberDistance(table, b);
+      if (byDistance !== 0) return byDistance;
+      if (a.length !== b.length) return a.length - b.length;
+      return a.join().localeCompare(b.join());
+    })[0];
+  }
+
+  /** The farthest a member of `group` sits from `table` (so we can prefer the most compact group). */
+  private maxMemberDistance(table: Table, group: string[]): number {
+    return Math.max(
+      ...group.map((id) => {
+        const member = this.findTableById(id);
+        if (!member) return Infinity;
+        return Math.hypot(member.x - table.x, member.y - table.y);
+      })
+    );
+  }
+
+  private findTableById(id: string): Table | undefined {
+    for (const room of this.rooms) {
+      const match = room.tables.find((table) => table.id === id);
+      if (match) return match;
+    }
+    return undefined;
   }
 
   /**
@@ -329,14 +430,7 @@ export class FloorplanRenderer {
           ? []
           : [table.id];
       } else {
-        const tableIndex = this.selectedTableIds.indexOf(table.id);
-        if (tableIndex !== -1) {
-          this.selectedTableIds.splice(tableIndex, 1);
-        } else if (this.atSelectionLimit()) {
-          return; // at the cap — ignore selecting another table
-        } else {
-          this.selectedTableIds.push(table.id);
-        }
+        this.toggleMultiSelection(table);
       }
 
       // Re-render to update selection styling

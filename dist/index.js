@@ -386,6 +386,8 @@ var FloorplanRenderer = class {
     this.selectedTableIds = [];
     this.selectionMode = "multi";
     this.maxSelectable = null;
+    this.covers = 0;
+    this.tableGroups = [];
     this.showBackgroundImage = true;
     this.showEmojis = true;
     this.selectedRoom = null;
@@ -408,7 +410,7 @@ var FloorplanRenderer = class {
     this.panRafId = null;
     this.resizeObserver = null;
     this.resizeRafId = null;
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -424,8 +426,10 @@ var FloorplanRenderer = class {
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || "multi";
     this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
-    this.showBackgroundImage = (_b = options.showBackgroundImage) != null ? _b : true;
-    this.showEmojis = (_c = options.showEmojis) != null ? _c : true;
+    this.covers = (_b = options.covers) != null ? _b : 0;
+    this.tableGroups = options.tableGroups || [];
+    this.showBackgroundImage = (_c = options.showBackgroundImage) != null ? _c : true;
+    this.showEmojis = (_d = options.showEmojis) != null ? _d : true;
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
@@ -455,6 +459,83 @@ var FloorplanRenderer = class {
    */
   atSelectionLimit() {
     return this.maxSelectable !== null && this.selectedTableIds.length >= this.maxSelectable;
+  }
+  /**
+   * Multi-select with linked-group support:
+   * - tapping a selected table clears it (or its whole group if it was an atomic group);
+   * - a table the party fits alone toggles as a single (respecting the cap);
+   * - a table too small alone auto-extends to the nearest eligible group, selected atomically.
+   */
+  toggleMultiSelection(table) {
+    if (this.selectedTableIds.includes(table.id)) {
+      const group2 = this.selectedGroupContaining(table.id);
+      this.selectedTableIds = group2 ? this.selectedTableIds.filter((id) => !group2.includes(id)) : this.selectedTableIds.filter((id) => id !== table.id);
+      return;
+    }
+    if (this.fitsAlone(table)) {
+      if (!this.atSelectionLimit()) this.selectedTableIds.push(table.id);
+      return;
+    }
+    const group = this.nearestGroupContaining(table);
+    if (group) this.selectedTableIds = [...group];
+  }
+  /** Whether the party fits this single table (covers unknown ⇒ treat as fits, single behaviour). */
+  fitsAlone(table) {
+    var _a;
+    return this.covers === 0 || ((_a = table.max_covers) != null ? _a : 0) >= this.covers;
+  }
+  /**
+   * The group that IS the current selection and contains `id`, matched EXACTLY (same length), so tapping any
+   * member clears the whole set. Exact match prevents an overlapping subset combo (e.g. [A,B] vs a selected
+   * [A,B,C]) from clearing only part of the group and leaving an invalid, non-combo remainder.
+   */
+  selectedGroupContaining(id) {
+    return this.tableGroups.find(
+      (group) => group.includes(id) && group.length === this.selectedTableIds.length && group.every((member) => this.selectedTableIds.includes(member))
+    ) || null;
+  }
+  /**
+   * Defensive: `tableGroups` is meant to be host-prefiltered, but as a package API the renderer never
+   * auto-selects a combo with a member that isn't in the current room, is blocked, or exceeds the cap.
+   */
+  groupIsSelectable(group) {
+    var _a;
+    if (this.maxSelectable !== null && group.length > this.maxSelectable)
+      return false;
+    const roomTableIds = (((_a = this.selectedRoom) == null ? void 0 : _a.tables) || []).filter((table) => table.type === "Table").map((table) => table.id);
+    return group.every(
+      (id) => roomTableIds.includes(id) && !this.blockedTableIds.includes(id)
+    );
+  }
+  /** Nearest eligible group containing `table`: smallest max-distance to a member, then fewest tables, then ids. */
+  nearestGroupContaining(table) {
+    const candidates = this.tableGroups.filter(
+      (group) => group.includes(table.id) && this.groupIsSelectable(group)
+    );
+    if (candidates.length === 0) return null;
+    return candidates.slice().sort((a, b) => {
+      const byDistance = this.maxMemberDistance(table, a) - this.maxMemberDistance(table, b);
+      if (byDistance !== 0) return byDistance;
+      if (a.length !== b.length) return a.length - b.length;
+      return a.join().localeCompare(b.join());
+    })[0];
+  }
+  /** The farthest a member of `group` sits from `table` (so we can prefer the most compact group). */
+  maxMemberDistance(table, group) {
+    return Math.max(
+      ...group.map((id) => {
+        const member = this.findTableById(id);
+        if (!member) return Infinity;
+        return Math.hypot(member.x - table.x, member.y - table.y);
+      })
+    );
+  }
+  findTableById(id) {
+    for (const room of this.rooms) {
+      const match = room.tables.find((table) => table.id === id);
+      if (match) return match;
+    }
+    return void 0;
   }
   /**
    * Initialize the canvas and render the floorplan
@@ -614,14 +695,7 @@ var FloorplanRenderer = class {
       if (this.selectionMode === "single") {
         this.selectedTableIds = this.selectedTableIds.includes(table.id) ? [] : [table.id];
       } else {
-        const tableIndex = this.selectedTableIds.indexOf(table.id);
-        if (tableIndex !== -1) {
-          this.selectedTableIds.splice(tableIndex, 1);
-        } else if (this.atSelectionLimit()) {
-          return;
-        } else {
-          this.selectedTableIds.push(table.id);
-        }
+        this.toggleMultiSelection(table);
       }
       this.render();
       if (this.onTableClick) {

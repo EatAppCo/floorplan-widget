@@ -71,6 +71,14 @@ export interface FloorplanRendererOptions {
   paidTableIds?: string[];
   /** Cap on how many tables can be selected at once in multi mode (omit = unbounded) */
   maxSelectable?: number;
+  /** Required party size; tapping a table smaller than this auto-extends to the nearest linked group */
+  covers?: number;
+  /**
+   * Engine-blessed linked combos (arrays of table ids) eligible for auto-extend. The host MUST pre-filter
+   * these to combos that are fully renderable in one room, unblocked, and within `maxSelectable`. The renderer
+   * also guards this at selection time, but it only ever selects combos you pass — it never assembles its own.
+   */
+  tableGroups?: string[][];
   /** Show each room's background image (default true) */
   showBackgroundImage?: boolean;
   /** Show emoji decor shapes (default true); false filters them out */
