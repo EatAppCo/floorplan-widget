@@ -64,7 +64,7 @@ var FLOOR_DEFAULT = {
   MIN_ZOOM_LEVEL: 1,
   OPACITY_DISABLED: 0.5,
   STROKE_WIDTH: 1,
-  STROKE_SELECTED_WIDTH: 1,
+  STROKE_SELECTED_WIDTH: 3,
   STATUS_DISTANCE: 8,
   CHAIR_DISABLED_OPACITY: 0.3,
   CHAIR_WIDTH: 30,
@@ -410,6 +410,14 @@ var FloorplanRenderer = class {
     this.panRafId = null;
     this.resizeObserver = null;
     this.resizeRafId = null;
+    this.touchTarget = null;
+    this.boundTouchStart = null;
+    this.boundTouchMove = null;
+    this.boundTouchEnd = null;
+    this.isPinching = false;
+    this.suppressTap = false;
+    this.pinchStartDistance = 0;
+    this.pinchStartZoom = 1;
     var _a, _b, _c, _d;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
@@ -646,6 +654,100 @@ var FloorplanRenderer = class {
       "mouse:up",
       (opt) => this.onPointerUp(opt)
     );
+    this.setupTouchGestures();
+  }
+  /**
+   * Pinch-to-zoom on touch devices. Fabric tracks only the first touch (pan/select), so a second
+   * finger is handled here: zoom continuously toward the pinch midpoint, and suppress the
+   * pan/select path and the browser's own page-zoom while two fingers are down. Bound on the
+   * container in the capture phase so it runs before Fabric's own canvas handlers.
+   */
+  setupTouchGestures() {
+    const target = this.canvasContainerElement;
+    if (!target) return;
+    this.touchTarget = target;
+    this.boundTouchStart = (e) => this.onTouchStart(e);
+    this.boundTouchMove = (e) => this.onTouchMove(e);
+    this.boundTouchEnd = (e) => this.onTouchEnd(e);
+    target.addEventListener("touchstart", this.boundTouchStart, {
+      capture: true
+    });
+    target.addEventListener("touchmove", this.boundTouchMove, {
+      passive: false,
+      capture: true
+    });
+    target.addEventListener("touchend", this.boundTouchEnd, { capture: true });
+    target.addEventListener("touchcancel", this.boundTouchEnd, {
+      capture: true
+    });
+  }
+  /**
+   * Distance between two active touch points
+   */
+  touchSeparation(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+  /**
+   * Midpoint of a two-finger touch, in canvas-local coordinates (origin at the canvas top-left)
+   */
+  touchMidpoint(touches) {
+    var _a, _b, _c;
+    const rect = (_a = this.canvasContainerElement) == null ? void 0 : _a.getBoundingClientRect();
+    const x = (touches[0].clientX + touches[1].clientX) / 2 - ((_b = rect == null ? void 0 : rect.left) != null ? _b : 0);
+    const y = (touches[0].clientY + touches[1].clientY) / 2 - ((_c = rect == null ? void 0 : rect.top) != null ? _c : 0);
+    return new import_fabric.fabric.Point(x, y);
+  }
+  onTouchStart(e) {
+    if (e.touches.length !== 2) return;
+    this.isPinching = true;
+    this.suppressTap = true;
+    this.isPanning = false;
+    this.pinchStartDistance = this.touchSeparation(e.touches);
+    this.pinchStartZoom = this.currentZoom();
+  }
+  onTouchMove(e) {
+    if (!this.isPinching || e.touches.length !== 2 || !this.canvas) return;
+    e.preventDefault();
+    if (this.pinchStartDistance <= 0) return;
+    const ratio = this.touchSeparation(e.touches) / this.pinchStartDistance;
+    const maxZoom = ZOOM_STEPS[ZOOM_STEPS.length - 1];
+    const zoom = Math.min(
+      maxZoom,
+      Math.max(FLOOR_DEFAULT.MIN_ZOOM_LEVEL, this.pinchStartZoom * ratio)
+    );
+    this.canvas.zoomToPoint(this.touchMidpoint(e.touches), zoom);
+    if (zoom <= FLOOR_DEFAULT.MIN_ZOOM_LEVEL) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    } else {
+      this.clampPan();
+    }
+    this.canvas.requestRenderAll();
+    this.syncBackgroundTransform();
+    this.syncMinimap();
+  }
+  onTouchEnd(e) {
+    if (e.touches.length >= 2 || !this.isPinching) return;
+    this.isPinching = false;
+    this.syncZoomStepIndex();
+    this.updateZoomButtons();
+  }
+  /**
+   * Align zoomStepIndex with the current (possibly continuous) zoom left by a pinch
+   */
+  syncZoomStepIndex() {
+    const zoom = this.currentZoom();
+    let nearest = 0;
+    ZOOM_STEPS.forEach((step, index) => {
+      if (Math.abs(step - zoom) < Math.abs(ZOOM_STEPS[nearest] - zoom)) {
+        nearest = index;
+      }
+    });
+    this.zoomStepIndex = nearest;
+  }
+  isMultiTouch(e) {
+    return "touches" in e && e.touches.length >= 2;
   }
   /**
    * Screen-space coordinates of a mouse or touch pointer event
@@ -658,11 +760,14 @@ var FloorplanRenderer = class {
     return { x: e.clientX, y: e.clientY };
   }
   onPointerDown(opt) {
+    if (this.isPinching || this.isMultiTouch(opt.e)) return;
+    this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e);
     this.dragDistance = 0;
     this.isPanning = this.currentZoom() > 1;
   }
   onPointerMove(opt) {
+    if (this.isPinching || this.isMultiTouch(opt.e)) return;
     if (!this.lastPointer) return;
     const xy = this.pointerXY(opt.e);
     const dx = xy.x - this.lastPointer.x;
@@ -675,6 +780,13 @@ var FloorplanRenderer = class {
     }
   }
   onPointerUp(opt) {
+    if (this.isPinching || this.suppressTap || this.isMultiTouch(opt.e)) {
+      this.suppressTap = false;
+      this.lastPointer = null;
+      this.isPanning = false;
+      this.dragDistance = 0;
+      return;
+    }
     const wasDrag = this.dragDistance > DRAG_THRESHOLD;
     this.lastPointer = null;
     this.isPanning = false;
@@ -1040,7 +1152,7 @@ var FloorplanRenderer = class {
       const isPaid = this.paidTableIds.includes(table.id);
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH,
         rx: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(width) / 2,
         ry: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(height) / 2,
         strokeUniform: true,
@@ -1215,6 +1327,35 @@ var FloorplanRenderer = class {
     if (this.panRafId !== null) {
       cancelAnimationFrame(this.panRafId);
       this.panRafId = null;
+    }
+    if (this.touchTarget) {
+      if (this.boundTouchStart) {
+        this.touchTarget.removeEventListener(
+          "touchstart",
+          this.boundTouchStart,
+          true
+        );
+      }
+      if (this.boundTouchMove) {
+        this.touchTarget.removeEventListener(
+          "touchmove",
+          this.boundTouchMove,
+          true
+        );
+      }
+      if (this.boundTouchEnd) {
+        this.touchTarget.removeEventListener(
+          "touchend",
+          this.boundTouchEnd,
+          true
+        );
+        this.touchTarget.removeEventListener(
+          "touchcancel",
+          this.boundTouchEnd,
+          true
+        );
+      }
+      this.touchTarget = null;
     }
     if (this.canvas) {
       this.canvas.dispose();

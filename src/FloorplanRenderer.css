@@ -22,6 +22,8 @@
 .floorplan-tab {
   padding: 12px 20px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   font-family:
     Inter,
     Roboto,
@@ -56,7 +58,7 @@
   /* Cap the plan so it stays compact on wide hosts (the widget card is 768px on desktop) and
      center it — without this the square canvas scales up to the full width and the plan looks
      oversized on smaller screens. Narrower hosts (mobile, admin preview) fall under the cap. */
-  max-width: 520px;
+  max-width: 768px;
   margin-inline: auto;
   align-self: center;
   height: 100%;

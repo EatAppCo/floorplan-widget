@@ -69,6 +69,14 @@ export class FloorplanRenderer {
   private panRafId: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeRafId: number | null = null;
+  private touchTarget: HTMLElement | null = null;
+  private boundTouchStart: ((e: TouchEvent) => void) | null = null;
+  private boundTouchMove: ((e: TouchEvent) => void) | null = null;
+  private boundTouchEnd: ((e: TouchEvent) => void) | null = null;
+  private isPinching: boolean = false;
+  private suppressTap: boolean = false;
+  private pinchStartDistance: number = 0;
+  private pinchStartZoom: number = 1;
 
   constructor(options: FloorplanRendererOptions) {
     // Set callbacks
@@ -367,6 +375,116 @@ export class FloorplanRenderer {
     this.canvas.on('mouse:up', (opt: fabric.IEvent<MouseEvent>) =>
       this.onPointerUp(opt)
     );
+
+    this.setupTouchGestures();
+  }
+
+  /**
+   * Pinch-to-zoom on touch devices. Fabric tracks only the first touch (pan/select), so a second
+   * finger is handled here: zoom continuously toward the pinch midpoint, and suppress the
+   * pan/select path and the browser's own page-zoom while two fingers are down. Bound on the
+   * container in the capture phase so it runs before Fabric's own canvas handlers.
+   */
+  private setupTouchGestures(): void {
+    const target = this.canvasContainerElement;
+    if (!target) return;
+
+    this.touchTarget = target;
+    this.boundTouchStart = (e: TouchEvent) => this.onTouchStart(e);
+    this.boundTouchMove = (e: TouchEvent) => this.onTouchMove(e);
+    this.boundTouchEnd = (e: TouchEvent) => this.onTouchEnd(e);
+
+    target.addEventListener('touchstart', this.boundTouchStart, {
+      capture: true,
+    });
+    target.addEventListener('touchmove', this.boundTouchMove, {
+      passive: false,
+      capture: true,
+    });
+    target.addEventListener('touchend', this.boundTouchEnd, { capture: true });
+    target.addEventListener('touchcancel', this.boundTouchEnd, {
+      capture: true,
+    });
+  }
+
+  /**
+   * Distance between two active touch points
+   */
+  private touchSeparation(touches: TouchList): number {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  /**
+   * Midpoint of a two-finger touch, in canvas-local coordinates (origin at the canvas top-left)
+   */
+  private touchMidpoint(touches: TouchList): fabric.Point {
+    const rect = this.canvasContainerElement?.getBoundingClientRect();
+    const x = (touches[0].clientX + touches[1].clientX) / 2 - (rect?.left ?? 0);
+    const y = (touches[0].clientY + touches[1].clientY) / 2 - (rect?.top ?? 0);
+    return new fabric.Point(x, y);
+  }
+
+  private onTouchStart(e: TouchEvent): void {
+    if (e.touches.length !== 2) return;
+
+    this.isPinching = true;
+    this.suppressTap = true;
+    this.isPanning = false;
+    this.pinchStartDistance = this.touchSeparation(e.touches);
+    this.pinchStartZoom = this.currentZoom();
+  }
+
+  private onTouchMove(e: TouchEvent): void {
+    if (!this.isPinching || e.touches.length !== 2 || !this.canvas) return;
+
+    e.preventDefault();
+    if (this.pinchStartDistance <= 0) return;
+
+    const ratio = this.touchSeparation(e.touches) / this.pinchStartDistance;
+    const maxZoom = ZOOM_STEPS[ZOOM_STEPS.length - 1];
+    const zoom = Math.min(
+      maxZoom,
+      Math.max(FLOOR_DEFAULT.MIN_ZOOM_LEVEL, this.pinchStartZoom * ratio)
+    );
+
+    this.canvas.zoomToPoint(this.touchMidpoint(e.touches), zoom);
+    if (zoom <= FLOOR_DEFAULT.MIN_ZOOM_LEVEL) {
+      this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    } else {
+      this.clampPan();
+    }
+    this.canvas.requestRenderAll();
+    this.syncBackgroundTransform();
+    this.syncMinimap();
+  }
+
+  private onTouchEnd(e: TouchEvent): void {
+    if (e.touches.length >= 2 || !this.isPinching) return;
+
+    this.isPinching = false;
+    // Snap the discrete step index to the continuous zoom so the +/- buttons resume from here
+    this.syncZoomStepIndex();
+    this.updateZoomButtons();
+  }
+
+  /**
+   * Align zoomStepIndex with the current (possibly continuous) zoom left by a pinch
+   */
+  private syncZoomStepIndex(): void {
+    const zoom = this.currentZoom();
+    let nearest = 0;
+    ZOOM_STEPS.forEach((step, index) => {
+      if (Math.abs(step - zoom) < Math.abs(ZOOM_STEPS[nearest] - zoom)) {
+        nearest = index;
+      }
+    });
+    this.zoomStepIndex = nearest;
+  }
+
+  private isMultiTouch(e: Event): boolean {
+    return 'touches' in e && (e as TouchEvent).touches.length >= 2;
   }
 
   /**
@@ -381,6 +499,9 @@ export class FloorplanRenderer {
   }
 
   private onPointerDown(opt: fabric.IEvent<MouseEvent>): void {
+    if (this.isPinching || this.isMultiTouch(opt.e)) return;
+
+    this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e as MouseEvent | TouchEvent);
     this.dragDistance = 0;
     // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll
@@ -388,6 +509,7 @@ export class FloorplanRenderer {
   }
 
   private onPointerMove(opt: fabric.IEvent<MouseEvent>): void {
+    if (this.isPinching || this.isMultiTouch(opt.e)) return;
     if (!this.lastPointer) return;
 
     const xy = this.pointerXY(opt.e as MouseEvent | TouchEvent);
@@ -403,6 +525,16 @@ export class FloorplanRenderer {
   }
 
   private onPointerUp(opt: fabric.IEvent<MouseEvent>): void {
+    // A two-finger gesture (pinch) must never fall through to pan/select, including the
+    // trailing mouse:up Fabric synthesizes as the fingers lift
+    if (this.isPinching || this.suppressTap || this.isMultiTouch(opt.e)) {
+      this.suppressTap = false;
+      this.lastPointer = null;
+      this.isPanning = false;
+      this.dragDistance = 0;
+      return;
+    }
+
     const wasDrag = this.dragDistance > DRAG_THRESHOLD;
     this.lastPointer = null;
     this.isPanning = false;
@@ -855,7 +987,9 @@ export class FloorplanRenderer {
       // Table object options
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: isSelected
+          ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH
+          : FLOOR_DEFAULT.STROKE_WIDTH,
         rx: isEmojiType
           ? 0
           : isRectangleShape
@@ -1124,6 +1258,37 @@ export class FloorplanRenderer {
     if (this.panRafId !== null) {
       cancelAnimationFrame(this.panRafId);
       this.panRafId = null;
+    }
+
+    // Remove touch-gesture listeners
+    if (this.touchTarget) {
+      if (this.boundTouchStart) {
+        this.touchTarget.removeEventListener(
+          'touchstart',
+          this.boundTouchStart,
+          true
+        );
+      }
+      if (this.boundTouchMove) {
+        this.touchTarget.removeEventListener(
+          'touchmove',
+          this.boundTouchMove,
+          true
+        );
+      }
+      if (this.boundTouchEnd) {
+        this.touchTarget.removeEventListener(
+          'touchend',
+          this.boundTouchEnd,
+          true
+        );
+        this.touchTarget.removeEventListener(
+          'touchcancel',
+          this.boundTouchEnd,
+          true
+        );
+      }
+      this.touchTarget = null;
     }
 
     // Dispose canvas

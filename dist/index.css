@@ -17,6 +17,8 @@
 .floorplan-tab {
   padding: 12px 20px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   font-family:
     Inter,
     Roboto,
@@ -42,7 +44,7 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  max-width: 520px;
+  max-width: 768px;
   margin-inline: auto;
   align-self: center;
   height: 100%;
