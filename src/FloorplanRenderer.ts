@@ -49,6 +49,7 @@ export class FloorplanRenderer {
   private tableGroups: string[][] = [];
   private showBackgroundImage: boolean = true;
   private showEmojis: boolean = true;
+  private roomUnavailableHint: string = '';
   private selectedRoom: Room | null = null;
   private onTableClick: OnTableClickCallback | null = null;
   private onRoomChange: OnRoomChangeCallback | null = null;
@@ -103,6 +104,7 @@ export class FloorplanRenderer {
     this.tableGroups = options.tableGroups || [];
     this.showBackgroundImage = options.showBackgroundImage ?? true;
     this.showEmojis = options.showEmojis ?? true;
+    this.roomUnavailableHint = options.roomUnavailableHint || '';
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
@@ -852,15 +854,32 @@ export class FloorplanRenderer {
         tabItem.classList.add('floorplan-tab--active');
       }
 
-      // Add click handler
-      tabItem.addEventListener('click', () => {
-        this.selectRoom(room.id);
-      });
+      // A room with no selectable table at the chosen time is disabled (greyed, unclickable) with a
+      // hint. The active room always has availability (the host opens on a room that does), so this
+      // only ever disables the other tabs.
+      const isDisabled = !isActive && !this.roomHasAvailability(room);
+
+      if (isDisabled) {
+        tabItem.classList.add('floorplan-tab--disabled');
+        if (this.roomUnavailableHint) tabItem.title = this.roomUnavailableHint;
+      } else {
+        tabItem.addEventListener('click', () => {
+          this.selectRoom(room.id);
+        });
+      }
 
       if (this.tabsContainerElement) {
         this.tabsContainerElement.appendChild(tabItem);
       }
     });
+  }
+
+  /** Whether a room has at least one bookable table that isn't blocked at the chosen time. */
+  private roomHasAvailability(room: Room): boolean {
+    return room.tables.some(
+      (table) =>
+        table.type === 'Table' && !this.blockedTableIds.includes(table.id)
+    );
   }
 
   /**
@@ -1218,6 +1237,9 @@ export class FloorplanRenderer {
       console.warn(`[FloorplanRenderer] Room with id "${roomId}" not found`);
       return;
     }
+
+    // Defensive: a disabled tab has no click handler, but never switch to an unavailable room.
+    if (!this.roomHasAvailability(room)) return;
 
     const previousRoom = this.selectedRoom;
     this.selectedRoom = room;

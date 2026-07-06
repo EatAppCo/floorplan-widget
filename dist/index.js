@@ -390,6 +390,7 @@ var FloorplanRenderer = class {
     this.tableGroups = [];
     this.showBackgroundImage = true;
     this.showEmojis = true;
+    this.roomUnavailableHint = "";
     this.selectedRoom = null;
     this.onTableClick = null;
     this.onRoomChange = null;
@@ -438,6 +439,7 @@ var FloorplanRenderer = class {
     this.tableGroups = options.tableGroups || [];
     this.showBackgroundImage = (_c = options.showBackgroundImage) != null ? _c : true;
     this.showEmojis = (_d = options.showEmojis) != null ? _d : true;
+    this.roomUnavailableHint = options.roomUnavailableHint || "";
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
     );
@@ -1043,13 +1045,25 @@ var FloorplanRenderer = class {
       if (isActive) {
         tabItem.classList.add("floorplan-tab--active");
       }
-      tabItem.addEventListener("click", () => {
-        this.selectRoom(room.id);
-      });
+      const isDisabled = !isActive && !this.roomHasAvailability(room);
+      if (isDisabled) {
+        tabItem.classList.add("floorplan-tab--disabled");
+        if (this.roomUnavailableHint) tabItem.title = this.roomUnavailableHint;
+      } else {
+        tabItem.addEventListener("click", () => {
+          this.selectRoom(room.id);
+        });
+      }
       if (this.tabsContainerElement) {
         this.tabsContainerElement.appendChild(tabItem);
       }
     });
+  }
+  /** Whether a room has at least one bookable table that isn't blocked at the chosen time. */
+  roomHasAvailability(room) {
+    return room.tables.some(
+      (table) => table.type === "Table" && !this.blockedTableIds.includes(table.id)
+    );
   }
   /**
    * Create a label for the table number
@@ -1302,6 +1316,7 @@ var FloorplanRenderer = class {
       console.warn(`[FloorplanRenderer] Room with id "${roomId}" not found`);
       return;
     }
+    if (!this.roomHasAvailability(room)) return;
     const previousRoom = this.selectedRoom;
     this.selectedRoom = room;
     if ((!previousRoom || previousRoom.id !== room.id) && this.onRoomChange) {

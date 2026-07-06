@@ -85,6 +85,11 @@ export interface FloorplanRendererOptions {
   showEmojis?: boolean;
   /** Room to open on first render (defaults to the first room) */
   initialRoomId?: string;
+  /**
+   * Tooltip shown on the tab of a room that has no selectable table at the chosen time. Such tabs are
+   * rendered disabled (greyed, unclickable). Omit to leave disabled tabs without a tooltip.
+   */
+  roomUnavailableHint?: string;
   selectionMode?: 'single' | 'multi';
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
