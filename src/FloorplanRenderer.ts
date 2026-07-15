@@ -121,9 +121,17 @@ export class FloorplanRenderer {
       return;
     }
 
-    // Open the requested room, else the first
+    // Open the requested room only when it is selectable. Otherwise prefer the
+    // first room with availability. If every room is unavailable, keep the first
+    // room's plan visible but render every tab disabled (no false active tab).
+    const requestedRoom = this.rooms.find(
+      (room) => room.id === options.initialRoomId
+    );
     this.selectedRoom =
-      this.rooms.find((room) => room.id === options.initialRoomId) ||
+      (requestedRoom && this.roomHasAvailability(requestedRoom)
+        ? requestedRoom
+        : null) ||
+      this.rooms.find((room) => this.roomHasAvailability(room)) ||
       this.rooms[0];
 
     this.initialize();
@@ -848,19 +856,17 @@ export class FloorplanRenderer {
       tabItem.className = 'floorplan-tab';
       tabItem.setAttribute('data-room-id', room.id);
 
-      const isActive = this.selectedRoom && this.selectedRoom.id === room.id;
+      const isDisabled = !this.roomHasAvailability(room);
+      const isActive =
+        !isDisabled && this.selectedRoom && this.selectedRoom.id === room.id;
 
       if (isActive) {
         tabItem.classList.add('floorplan-tab--active');
       }
 
-      // A room with no selectable table at the chosen time is disabled (greyed, unclickable) with a
-      // hint. The active room always has availability (the host opens on a room that does), so this
-      // only ever disables the other tabs.
-      const isDisabled = !isActive && !this.roomHasAvailability(room);
-
       if (isDisabled) {
         tabItem.classList.add('floorplan-tab--disabled');
+        tabItem.setAttribute('aria-disabled', 'true');
         if (this.roomUnavailableHint) tabItem.title = this.roomUnavailableHint;
       } else {
         tabItem.addEventListener('click', () => {

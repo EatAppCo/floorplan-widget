@@ -453,7 +453,10 @@ var FloorplanRenderer = class {
       this.emitError(new Error("No rooms available."));
       return;
     }
-    this.selectedRoom = this.rooms.find((room) => room.id === options.initialRoomId) || this.rooms[0];
+    const requestedRoom = this.rooms.find(
+      (room) => room.id === options.initialRoomId
+    );
+    this.selectedRoom = (requestedRoom && this.roomHasAvailability(requestedRoom) ? requestedRoom : null) || this.rooms.find((room) => this.roomHasAvailability(room)) || this.rooms[0];
     this.initialize();
   }
   /**
@@ -1041,13 +1044,14 @@ var FloorplanRenderer = class {
       tabItem.textContent = room.name;
       tabItem.className = "floorplan-tab";
       tabItem.setAttribute("data-room-id", room.id);
-      const isActive = this.selectedRoom && this.selectedRoom.id === room.id;
+      const isDisabled = !this.roomHasAvailability(room);
+      const isActive = !isDisabled && this.selectedRoom && this.selectedRoom.id === room.id;
       if (isActive) {
         tabItem.classList.add("floorplan-tab--active");
       }
-      const isDisabled = !isActive && !this.roomHasAvailability(room);
       if (isDisabled) {
         tabItem.classList.add("floorplan-tab--disabled");
+        tabItem.setAttribute("aria-disabled", "true");
         if (this.roomUnavailableHint) tabItem.title = this.roomUnavailableHint;
       } else {
         tabItem.addEventListener("click", () => {

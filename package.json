@@ -1,6 +1,6 @@
 {
-  "name": "@eat/floorplan-widget",
-  "version": "1.0.0",
+  "name": "@eatappco/floorplan-widget",
+  "version": "1.0.1",
   "description": "Floorplan renderer for Widget.",
   "main": "dist/index.js",
   "files": [
