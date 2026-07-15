@@ -341,11 +341,14 @@ var getTableTypePriority = (table, emojiList) => {
 var isEmoji = (table, emojiList) => {
   return table && table.type === "Shape" && emojiList.includes(table.number);
 };
-var sortTablesByRenderOrder = (tables, emojiList) => {
+var sortTablesByRenderOrder = (tables, emojiList, selectedTableIds = []) => {
+  const selectedIds = new Set(selectedTableIds);
   return [...tables].sort((a, b) => {
     const priorityA = getTableTypePriority(a, emojiList);
     const priorityB = getTableTypePriority(b, emojiList);
-    return priorityA - priorityB;
+    const priorityDifference = priorityA - priorityB;
+    if (priorityDifference !== 0) return priorityDifference;
+    return Number(selectedIds.has(a.id)) - Number(selectedIds.has(b.id));
   });
 };
 
@@ -1294,7 +1297,8 @@ var FloorplanRenderer = class {
       const tablesToRender = (this.selectedRoom && this.selectedRoom.tables || []).filter((table) => this.showEmojis || !isEmoji(table, floorEmojiList));
       const sortedTables = sortTablesByRenderOrder(
         tablesToRender,
-        floorEmojiList
+        floorEmojiList,
+        this.selectedTableIds
       );
       sortedTables.forEach((table) => {
         const { tableGroup, labelGroup } = this.createTableObject(table);

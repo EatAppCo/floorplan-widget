@@ -106,18 +106,27 @@ export const isEmoji = (
 };
 
 /**
- * Sort tables by render priority (shapes first, then emojis, then tables)
+ * Sort tables by render priority (shapes first, then emojis, then tables),
+ * with selected tables above other tables so overlapping objects cannot hide them.
  * @param tables - Array of tables to sort
  * @param emojiList - List of emoji characters
+ * @param selectedTableIds - IDs of tables that must render on top
  * @returns Sorted array of tables
  */
 export const sortTablesByRenderOrder = (
   tables: Table[],
-  emojiList: readonly string[]
+  emojiList: readonly string[],
+  selectedTableIds: readonly string[] = []
 ): Table[] => {
+  const selectedIds = new Set(selectedTableIds);
+
   return [...tables].sort((a, b) => {
     const priorityA = getTableTypePriority(a, emojiList);
     const priorityB = getTableTypePriority(b, emojiList);
-    return priorityA - priorityB;
+    const priorityDifference = priorityA - priorityB;
+
+    if (priorityDifference !== 0) return priorityDifference;
+
+    return Number(selectedIds.has(a.id)) - Number(selectedIds.has(b.id));
   });
 };

@@ -1208,7 +1208,8 @@ export class FloorplanRenderer {
       // Sort tables by render order (shapes first, then emojis, then tables)
       const sortedTables = sortTablesByRenderOrder(
         tablesToRender,
-        floorEmojiList
+        floorEmojiList,
+        this.selectedTableIds
       );
 
       // Create and add objects for each table
