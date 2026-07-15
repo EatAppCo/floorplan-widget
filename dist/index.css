@@ -83,6 +83,11 @@
   gap: 8px;
   z-index: 2;
 }
+@media (max-width: 767px) {
+  .floorplan-zoom-controls {
+    bottom: max(32px, calc(16px + env(safe-area-inset-bottom)));
+  }
+}
 .floorplan-zoom-button {
   display: flex;
   align-items: center;
