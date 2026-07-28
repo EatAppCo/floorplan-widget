@@ -1111,7 +1111,11 @@ export class FloorplanRenderer {
    * Position the label relative to its table group
    */
   private positionLabel(tableGroup: TableGroup, labelGroup: LabelGroup): void {
-    const boundingRect = tableGroup.getBoundingRect();
+    // Labels live in the same canvas coordinate space as their tables. Using
+    // the default bounding rect applies the current viewport transform, so a
+    // re-render while zoomed (for example after selecting a table) stores
+    // screen-space coordinates that Fabric then zooms and pans a second time.
+    const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === 'Shape';
 
     // The `$` badge straddles the table's bottom-right corner (per Figma)

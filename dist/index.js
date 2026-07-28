@@ -1237,7 +1237,7 @@ var FloorplanRenderer = class {
    * Position the label relative to its table group
    */
   positionLabel(tableGroup, labelGroup) {
-    const boundingRect = tableGroup.getBoundingRect();
+    const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === "Shape";
     if (labelGroup._positionOnTable === "corner") {
       labelGroup.set({
