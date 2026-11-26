@@ -22,3 +22,6 @@ npm-debug.log*
 # Environment
 .env
 .env.local
+
+# Golden renders (A/B output, never committed)
+.golden/

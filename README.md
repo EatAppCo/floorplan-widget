@@ -43,3 +43,19 @@ const floorplan = new FloorplanRenderer({
 | `onRoomChange` | `Function` | No | Called when room tab is changed |
 | `onError` | `Function` | No | Called when an error occurs |
 
+
+## Development
+
+```bash
+npm test             # unit + characterization tests (Node)
+npm run golden:check # pixel A/B of default rendering vs the baseline commit
+```
+
+`golden:check` renders the fixture rooms in `golden/fixtures.ts` in several
+states (fit, tap, single, covers, zoomed, zoomed-pan, emojis hidden, pinch) with
+your local Chrome (`CHROME_PATH` overrides the macOS default). It renders both
+the commit in `golden/config.json` (`baseSha`, or `GOLDEN_BASE_SHA`) — built in
+a temporary git worktree — and the working tree, on the same machine, and fails
+on any differing pixel or failed state assertion. Diffs are written to
+`.golden/diff-<state>.png`. Pixels depend on the browser and fonts, so reference
+images are never committed.
