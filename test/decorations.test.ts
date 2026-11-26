@@ -7,6 +7,7 @@ import {
   renderLayers,
   ringColorFor,
   ringGeometry,
+  ringGlow,
 } from '../src/helpers/decorations';
 import { buildRenderer, room, stubCanvas, table } from './support/renderer';
 import type { Table } from '../src/types';
@@ -42,20 +43,20 @@ test('no labels stay empty', () => {
   assert.deepEqual(formatTableLabels(['  ', '']), []);
 });
 
-test('ring geometry puts the outer edge 4px outside the table', () => {
+test('ring geometry puts a 6px band outside the table', () => {
   assert.deepEqual(
     ringGeometry({ shape: 'rectangle', width: 40, height: 20 }),
     {
       kind: 'rect',
-      width: 45,
-      height: 25,
-      rx: 6.5,
+      width: 44,
+      height: 24,
+      rx: 6,
     }
   );
   assert.deepEqual(ringGeometry({ shape: 'circle', width: 30, height: 30 }), {
     kind: 'ellipse',
-    rx: 17.5,
-    ry: 17.5,
+    rx: 17,
+    ry: 17,
   });
 });
 
@@ -68,9 +69,9 @@ test('ringColorFor only rings bookable, unblocked tables with a colour', () => {
 });
 
 test('below labels sit under the table, or under its badge', () => {
-  assert.equal(belowLabelTop({ tableBottom: 100 }), 104);
-  assert.equal(belowLabelTop({ tableBottom: 100, badgeBottom: 110 }), 114);
-  assert.equal(belowLabelTop({ tableBottom: 100, badgeBottom: 90 }), 104);
+  assert.equal(belowLabelTop({ tableBottom: 100 }), 106);
+  assert.equal(belowLabelTop({ tableBottom: 100, badgeBottom: 110 }), 116);
+  assert.equal(belowLabelTop({ tableBottom: 100, badgeBottom: 90 }), 106);
 });
 
 test('renderLayers splits décor from tables and keeps the given order', () => {
@@ -144,4 +145,10 @@ test('without rings or labels the order is exactly today’s', () => {
     'badge:t1',
     'group:t2',
   ]);
+});
+
+test('ringGlow turns a section hex into a translucent glow colour', () => {
+  assert.equal(ringGlow('#F5B94A'), 'rgba(245, 185, 74, 0.45)');
+  assert.equal(ringGlow('7db'), 'rgba(119, 221, 187, 0.45)');
+  assert.equal(ringGlow('not-a-colour'), 'rgba(0, 0, 0, 0)');
 });

@@ -3,6 +3,7 @@ import {
   DEFAULT_TABLE_PALETTE,
   palette,
   SELECTED_TABLE_SOLID_FILL,
+  SELECTED_TABLE_SOLID_SUBTEXT,
   SELECTED_TABLE_SOLID_TEXT,
 } from '../config/palette';
 import { Table, TableShape } from '../types';
@@ -86,7 +87,7 @@ export interface InsideTextInput {
   selectedAppearance: SelectedAppearance;
 }
 
-const MAX_TEXT = 13;
+const MAX_TEXT = 14;
 const MIN_TWO_LINE = 9;
 const MIN_TEXT = 7;
 const CHAR_WIDTH = 0.6;
@@ -117,7 +118,7 @@ export const tableInsideText = (
   const interior = tableInterior(width, height, shape);
   const solid = isSelected && selectedAppearance === 'solid';
   const numberFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.dark100;
-  const coversFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.gray200;
+  const coversFill = solid ? SELECTED_TABLE_SOLID_SUBTEXT : palette.dark50;
   const number = table.number;
   const covers = `${table.min_covers}–${table.max_covers}`;
   const base = Math.min(MAX_TEXT, Math.round(Math.min(width, height) * 0.28));

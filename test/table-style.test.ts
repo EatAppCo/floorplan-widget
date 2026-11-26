@@ -75,12 +75,12 @@ test('a 40px square shows number and covers on two lines', () => {
     mode: 'inside',
     lines: [
       { text: 'T1', fontSize: 11, fill: '#34353A' },
-      { text: '2–4', fontSize: 9, fill: '#999999' },
+      { text: '2–4', fontSize: 9, fill: '#4A4C50' },
     ],
   });
 });
 
-test('solid selection turns the inside text white', () => {
+test('solid selection turns the number white and the covers soft white', () => {
   const result = inside('T1', 40, 40, 'square', {
     isSelected: true,
     selectedAppearance: 'solid',
@@ -89,7 +89,7 @@ test('solid selection turns the inside text white', () => {
   if (result.mode === 'inside') {
     assert.deepEqual(
       result.lines.map((line) => line.fill),
-      ['#FFFFFF', '#FFFFFF']
+      ['#FFFFFF', 'rgba(255,255,255,0.85)']
     );
   }
 });

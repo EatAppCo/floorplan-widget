@@ -4,10 +4,10 @@ import { Table, TableShape } from '../types';
 import { isEmoji } from './tables';
 
 /** Ring stroke width, and how far its outer edge sits outside the table edge. */
-export const RING_STROKE = 3;
-export const RING_OUTER = 4;
+export const RING_STROKE = 8;
+export const RING_OUTER = 6;
 /** Gap between a table (or its badge) and the labels stacked below it. */
-export const LABEL_GAP = 4;
+export const LABEL_GAP = RING_OUTER;
 
 /**
  * Labels to draw under a table: trimmed, blank-free, de-duplicated, each cut to
@@ -100,3 +100,18 @@ export const renderLayers = (
   decor: sorted.filter((table) => table.type === 'Shape'),
   tables: sorted.filter((table) => table.type !== 'Shape'),
 });
+
+/** A translucent version of a ring colour, for its soft glow. */
+export const ringGlow = (color: string, alpha = 0.45): string => {
+  const hex = color.replace(/^#/, '');
+  const full =
+    hex.length === 3
+      ? hex
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : hex;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return 'rgba(0, 0, 0, 0)';
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};

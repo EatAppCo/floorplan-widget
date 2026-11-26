@@ -57,6 +57,71 @@ export const featureTables = [
   }),
 ];
 
+// The Claude Design "Table Grouping Floorplan" Courtyard room, for the design review.
+const cy = (
+  id: string,
+  x: number,
+  y: number,
+  size: string,
+  max: number,
+  extra: Record<string, unknown> = {}
+) =>
+  t(id, x, y, {
+    size,
+    max_covers: max,
+    shape: 'circle',
+    room_id: 'courtyard',
+    ...extra,
+  });
+export const courtyardTables = [
+  cy('CY01', 0.128, 0.18, '6.4x6.4', 4),
+  cy('CY02', 0.287, 0.175, '9.8x6.6', 6, { shape: 'rectangle' }),
+  cy('CY03', 0.448, 0.18, '5.4x5.4', 2),
+  cy('CY10', 0.687, 0.18, '6.4x6.4', 2),
+  cy('CY11', 0.853, 0.18, '6.4x6.4', 4),
+  cy('CY04', 0.113, 0.408, '6.4x6.4', 4),
+  cy('CY05', 0.278, 0.41, '5.9x5.9', 2),
+  cy('CY06', 0.44, 0.41, '5.9x5.9', 2),
+  cy('CY15', 0.688, 0.408, '7x7', 4),
+  cy('CY16', 0.853, 0.408, '7x7', 4),
+  cy('CY51', 0.327, 0.769, '31.8x7.7', 20, { shape: 'rectangle' }),
+  cy('CY17', 0.698, 0.773, '6.6x6.6', 4),
+  cy('CY18', 0.862, 0.773, '6.6x6.6', 4),
+];
+const AMBER = '#F5B94A';
+const BLUE = '#7DB9F2';
+const PINK = '#F29BB0';
+export const courtyardRings = {
+  CY01: AMBER,
+  CY02: AMBER,
+  CY03: AMBER,
+  CY04: AMBER,
+  CY05: AMBER,
+  CY06: AMBER,
+  CY10: BLUE,
+  CY11: BLUE,
+  CY15: BLUE,
+  CY16: BLUE,
+  CY51: PINK,
+  CY17: PINK,
+  CY18: PINK,
+};
+export const courtyardLabels = {
+  CY01: ['Garden terrace', 'Outdoor', 'Accessible'],
+  CY02: ['Garden terrace', 'Shaded'],
+  CY03: ['Garden terrace', 'Outdoor'],
+  CY10: ['Fountain lounge', 'Outdoor', 'Accessible'],
+  CY11: ['Fountain lounge', 'Quiet'],
+  CY04: ['Garden terrace', 'Shaded', 'Accessible'],
+  CY05: ['Garden terrace', 'Outdoor'],
+  CY06: ['Garden terrace', 'Shaded'],
+  CY15: ['Fountain lounge', 'Outdoor'],
+  CY16: ['Fountain lounge', 'Quiet', 'Accessible'],
+  CY51: ['Event lawn', 'Outdoor'],
+  CY17: ['Event lawn', 'Large party'],
+  CY18: ['Event lawn', 'Outdoor', 'Accessible'],
+};
+
 export const rooms = [
   {
     id: 'main',
@@ -81,6 +146,14 @@ export const rooms = [
     background_image_sid: null,
     table_ids: featureTables.map((x) => x.id),
     tables: featureTables,
+  },
+  {
+    id: 'courtyard',
+    name: 'Courtyard',
+    background_image_url: null,
+    background_image_sid: null,
+    table_ids: courtyardTables.map((x) => x.id),
+    tables: courtyardTables,
   },
 ];
 
@@ -109,6 +182,15 @@ export const stateOptions: Record<string, Record<string, unknown>> = {
   labels: {
     initialRoomId: 'features',
     tableLabels: { T1: ['Garden terrace', 'Outdoor', 'Accessible'] },
+  },
+  design: {
+    initialRoomId: 'courtyard',
+    showRoomTabs: false,
+    tableContent: 'inside',
+    selectedAppearance: 'solid',
+    tableRings: courtyardRings,
+    tableLabels: courtyardLabels,
+    initialSelectedTableIds: ['CY04', 'CY51'],
   },
   setters: {
     initialRoomId: 'features',

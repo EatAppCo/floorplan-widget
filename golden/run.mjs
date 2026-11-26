@@ -34,6 +34,7 @@ const FEATURE_STATES = [
   'labels',
   'drag-select',
   'setters',
+  'design',
 ];
 const states =
   only === 'features' ? FEATURE_STATES : only ? only.split(',') : ALL_STATES;
@@ -148,6 +149,7 @@ const interactions = {
   pinch: async (page) => pinch(page, 'sq'),
   'inside-text': async () => {},
   rings: async () => {},
+  design: async () => {},
   setters: async (page, before) => {
     await zoomIn(page);
     before.steps = await page.evaluate(() => {
@@ -211,9 +213,11 @@ async function layerList(page) {
         index,
         kind: o.tableContext
           ? 'table'
-          : o._relatedTableId
-            ? `label:${o._positionOnTable}`
-            : 'other',
+          : o._ring
+            ? 'ring'
+            : o._relatedTableId
+              ? `label:${o._positionOnTable}`
+              : 'other',
         id: o.tableContext ? o.tableContext.id : o._relatedTableId || null,
         stroke: o.stroke || null,
         evented: o.evented,
@@ -362,12 +366,11 @@ const expectations = {
     check(s.selected.join() === 'T1,C1', `selected ${s.selected}`);
     check(!s.boxLeft, 'selection box left in the DOM');
   },
+  design: (s) => {
+    check(s.selected.join() === 'CY04,CY51', `design selected ${s.selected}`);
+  },
   rings: (s) => {
-    const rings = s.layers.filter(
-      (l) =>
-        l.kind === 'other' &&
-        ['#F5B94A', '#7DB9F2', '#F29BB0'].includes(l.stroke)
-    );
+    const rings = s.layers.filter((l) => l.kind === 'ring');
     check(rings.length === 3, `rings ${JSON.stringify(rings)}`);
     check(
       rings.every((r) => r.evented === false),
@@ -403,7 +406,8 @@ const expectations = {
     check(s.selected.join() === 'T1', `selected ${s.selected}`);
     check(s.objects.T1.fill === '#128849', `T1 fill ${s.objects.T1.fill}`);
     check(
-      s.objects.T1.texts.every((x) => x.fill === '#FFFFFF'),
+      s.objects.T1.texts.map((x) => x.fill).join() ===
+        '#FFFFFF,rgba(255,255,255,0.85)',
       `T1 text fills ${JSON.stringify(s.objects.T1.texts)}`
     );
     check(

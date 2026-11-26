@@ -34,6 +34,7 @@ import {
   RING_STROKE,
   ringColorFor,
   ringGeometry,
+  ringGlow,
 } from './helpers/decorations';
 import {
   SelectedAppearance,
@@ -1168,28 +1169,62 @@ export class FloorplanRenderer {
       this.canvasSize
     );
     const geometry = ringGeometry({ shape: table.shape, width, height });
-    const options = {
+    const half = RING_STROKE / 2;
+    const shapeFor = (
+      grow: number,
+      options: Record<string, unknown>
+    ): fabric.Object =>
+      geometry.kind === 'ellipse'
+        ? new fabric.Ellipse({
+            ...CENTER_ORIGIN,
+            ...options,
+            rx: geometry.rx + grow,
+            ry: geometry.ry + grow,
+          })
+        : new fabric.Rect({
+            ...CENTER_ORIGIN,
+            ...options,
+            width: geometry.width + grow * 2,
+            height: geometry.height + grow * 2,
+            rx: geometry.rx + grow,
+            ry: geometry.rx + grow,
+          });
+
+    // A filled silhouette, hidden under the opaque table, casts the soft glow:
+    // only its blurred shadow spreads out past the band, so the band keeps its
+    // pastel tone and the falloff shows beyond it.
+    // Two stacked silhouettes give the broad wash the design has.
+    const glowShape = () =>
+      shapeFor(-half, {
+        fill: color,
+        strokeWidth: 0,
+        shadow: new fabric.Shadow({
+          color: ringGlow(color, 0.9),
+          blur: 24,
+          offsetX: 0,
+          offsetY: 0,
+        }),
+      });
+    const band = shapeFor(0, {
+      fill: 'transparent',
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.55,
+    });
+
+    const ring = new fabric.Group([glowShape(), glowShape(), band], {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       top,
       left,
       angle: table.rotation || 0,
-      fill: 'transparent',
-      stroke: color,
-      strokeWidth: RING_STROKE,
-      strokeUniform: true,
-      opacity: 0.6,
       perPixelTargetFind: false,
-    };
-    return geometry.kind === 'ellipse'
-      ? new fabric.Ellipse({ ...options, rx: geometry.rx, ry: geometry.ry })
-      : new fabric.Rect({
-          ...options,
-          width: geometry.width,
-          height: geometry.height,
-          rx: geometry.rx,
-          ry: geometry.rx,
-        });
+      // Cached groups clip their shadow to the cache bounds (a visible box)
+      objectCaching: false,
+    });
+    (ring as fabric.Group & { _ring?: boolean })._ring = true;
+    return ring;
   }
 
   /**
@@ -1200,8 +1235,7 @@ export class FloorplanRenderer {
     const texts = formatTableLabels(this.tableLabels[table.id] || []);
     if (texts.length === 0) return null;
 
-    const config = LABEL_SIZE_CONFIG.very_small;
-    const pillHeight = config.LINE_HEIGHT;
+    const pillHeight = 16;
     const gap = 2;
     const objects: fabric.Object[] = [];
 
@@ -1213,8 +1247,9 @@ export class FloorplanRenderer {
         top: centreY,
         left: 0,
         fontFamily: 'Inter, sans-serif',
-        fill: palette.dark50,
-        fontSize: config.TEXT_FONT_SIZE,
+        fill: '#555555',
+        fontSize: 10,
+        fontWeight: '600',
         lineHeight: 1,
         textAlign: 'center',
       });
@@ -1223,12 +1258,12 @@ export class FloorplanRenderer {
         ...CENTER_ORIGIN,
         top: centreY,
         left: 0,
-        width: (text.width || 0) + 10,
+        width: (text.width || 0) + 14,
         height: pillHeight,
         rx: pillHeight / 2,
         ry: pillHeight / 2,
         fill: palette.white,
-        stroke: palette.gray,
+        stroke: '#D9D9D9',
         strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
       });
       objects.push(pill, text);
@@ -1267,26 +1302,40 @@ export class FloorplanRenderer {
     if (plan.mode !== 'inside') return null;
 
     const interior = tableInterior(width, height, table.shape);
-    const lineHeights = plan.lines.map((line) => line.fontSize * 1.15);
-    const total = lineHeights.reduce((sum, h) => sum + h, 0);
-    let cursor = -total / 2;
-
-    const texts = plan.lines.map((line, index) => {
-      const top = cursor + lineHeights[index] / 2;
-      cursor += lineHeights[index];
-      return new fabric.Text(line.text, {
-        ...DISABLED_OBJECT_PROPERTIES,
-        ...CENTER_ORIGIN,
-        top,
-        left: 0,
-        fontFamily: 'Inter, sans-serif',
-        fontSize: line.fontSize,
-        fontWeight: index === 0 ? '600' : 'normal',
-        fill: line.fill,
-        lineHeight: 1,
-        textAlign: 'center',
+    const build = (sizes: number[]) => {
+      const lineHeights = sizes.map((size) => size * 1.15);
+      const total = lineHeights.reduce((sum, h) => sum + h, 0);
+      let cursor = -total / 2;
+      const texts = plan.lines.map((line, index) => {
+        const top = cursor + lineHeights[index] / 2;
+        cursor += lineHeights[index];
+        return new fabric.Text(line.text, {
+          ...DISABLED_OBJECT_PROPERTIES,
+          ...CENTER_ORIGIN,
+          top,
+          left: 0,
+          fontFamily: 'Inter, sans-serif',
+          fontSize: sizes[index],
+          fontWeight: index === 0 ? '700' : 'normal',
+          fill: line.fill,
+          lineHeight: 1,
+          textAlign: 'center',
+        });
       });
-    });
+      return { texts, total };
+    };
+
+    // Fabric's real metrics can exceed the estimate (e.g. bold glyphs): shrink
+    // every line together to fit, and only give up below the minimum size.
+    let sizes = plan.lines.map((line) => line.fontSize);
+    let { texts, total } = build(sizes);
+    const widest = Math.max(...texts.map((text) => text.width || 0));
+    const scale = Math.min(1, interior.width / widest, interior.height / total);
+    if (scale < 1) {
+      sizes = sizes.map((size) => Math.floor(size * scale));
+      if (sizes[0] < 7) return null;
+      ({ texts } = build(sizes));
+    }
 
     const overflows = texts.some(
       (text) =>

@@ -31,7 +31,7 @@ renderer.positionLabel(tableGroup, {
     Object.assign(belowPosition, position);
   },
 });
-assert.deepEqual(belowPosition, { top: 64, left: 25 });
+assert.deepEqual(belowPosition, { top: 66, left: 25 });
 
 // ...and under the number badge when the table has one.
 const underBadge: { top?: number; left?: number } = {};
@@ -47,4 +47,4 @@ renderer.positionLabel(
     getBoundingRect: () => ({ top: 55, left: 15, width: 20, height: 14 }),
   }
 );
-assert.deepEqual(underBadge, { top: 73, left: 25 });
+assert.deepEqual(underBadge, { top: 75, left: 25 });

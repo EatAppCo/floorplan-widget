@@ -163,6 +163,7 @@ var shapeColors = [
 ];
 var SELECTED_TABLE_SOLID_FILL = "#128849";
 var SELECTED_TABLE_SOLID_TEXT = "#FFFFFF";
+var SELECTED_TABLE_SOLID_SUBTEXT = "rgba(255,255,255,0.85)";
 
 // src/config/emojis.ts
 var floorEmojiList = [
@@ -431,9 +432,9 @@ var sameRecord = (a, b) => {
 };
 
 // src/helpers/decorations.ts
-var RING_STROKE = 3;
-var RING_OUTER = 4;
-var LABEL_GAP = 4;
+var RING_STROKE = 8;
+var RING_OUTER = 6;
+var LABEL_GAP = RING_OUTER;
 var formatTableLabels = (labels, {
   maxLabels = 3,
   maxChars = 16
@@ -482,6 +483,13 @@ var renderLayers = (sorted) => ({
   decor: sorted.filter((table) => table.type === "Shape"),
   tables: sorted.filter((table) => table.type !== "Shape")
 });
+var ringGlow = (color, alpha = 0.45) => {
+  const hex = color.replace(/^#/, "");
+  const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "rgba(0, 0, 0, 0)";
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
 
 // src/helpers/tableStyle.ts
 var tableShapeStyle = ({
@@ -501,7 +509,7 @@ var tableShapeStyle = ({
     strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH
   };
 };
-var MAX_TEXT = 13;
+var MAX_TEXT = 14;
 var MIN_TWO_LINE = 9;
 var MIN_TEXT = 7;
 var CHAR_WIDTH = 0.6;
@@ -515,7 +523,7 @@ var tableInsideText = (table, { width, height, shape, isSelected, selectedAppear
   const interior = tableInterior(width, height, shape);
   const solid = isSelected && selectedAppearance === "solid";
   const numberFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.dark100;
-  const coversFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.gray200;
+  const coversFill = solid ? SELECTED_TABLE_SOLID_SUBTEXT : palette.dark50;
   const number = table.number;
   const covers = `${table.min_covers}\u2013${table.max_covers}`;
   const base = Math.min(MAX_TEXT, Math.round(Math.min(width, height) * 0.28));
@@ -1487,26 +1495,49 @@ var FloorplanRenderer = class {
       this.canvasSize
     );
     const geometry = ringGeometry({ shape: table.shape, width, height });
-    const options = {
+    const half = RING_STROKE / 2;
+    const shapeFor = (grow, options) => geometry.kind === "ellipse" ? new import_fabric.fabric.Ellipse({
+      ...CENTER_ORIGIN,
+      ...options,
+      rx: geometry.rx + grow,
+      ry: geometry.ry + grow
+    }) : new import_fabric.fabric.Rect({
+      ...CENTER_ORIGIN,
+      ...options,
+      width: geometry.width + grow * 2,
+      height: geometry.height + grow * 2,
+      rx: geometry.rx + grow,
+      ry: geometry.rx + grow
+    });
+    const glowShape = () => shapeFor(-half, {
+      fill: color,
+      strokeWidth: 0,
+      shadow: new import_fabric.fabric.Shadow({
+        color: ringGlow(color, 0.9),
+        blur: 24,
+        offsetX: 0,
+        offsetY: 0
+      })
+    });
+    const band = shapeFor(0, {
+      fill: "transparent",
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.55
+    });
+    const ring = new import_fabric.fabric.Group([glowShape(), glowShape(), band], {
       ...DISABLED_OBJECT_PROPERTIES,
       ...CENTER_ORIGIN,
       top,
       left,
       angle: table.rotation || 0,
-      fill: "transparent",
-      stroke: color,
-      strokeWidth: RING_STROKE,
-      strokeUniform: true,
-      opacity: 0.6,
-      perPixelTargetFind: false
-    };
-    return geometry.kind === "ellipse" ? new import_fabric.fabric.Ellipse({ ...options, rx: geometry.rx, ry: geometry.ry }) : new import_fabric.fabric.Rect({
-      ...options,
-      width: geometry.width,
-      height: geometry.height,
-      rx: geometry.rx,
-      ry: geometry.rx
+      perPixelTargetFind: false,
+      // Cached groups clip their shadow to the cache bounds (a visible box)
+      objectCaching: false
     });
+    ring._ring = true;
+    return ring;
   }
   /**
    * Opt-in stack of label pills under a table (e.g. seating areas). Unrotated,
@@ -1515,8 +1546,7 @@ var FloorplanRenderer = class {
   createTableLabels(table) {
     const texts = formatTableLabels(this.tableLabels[table.id] || []);
     if (texts.length === 0) return null;
-    const config = LABEL_SIZE_CONFIG.very_small;
-    const pillHeight = config.LINE_HEIGHT;
+    const pillHeight = 16;
     const gap = 2;
     const objects = [];
     texts.forEach((label, index) => {
@@ -1527,8 +1557,9 @@ var FloorplanRenderer = class {
         top: centreY,
         left: 0,
         fontFamily: "Inter, sans-serif",
-        fill: palette.dark50,
-        fontSize: config.TEXT_FONT_SIZE,
+        fill: "#555555",
+        fontSize: 10,
+        fontWeight: "600",
         lineHeight: 1,
         textAlign: "center"
       });
@@ -1537,12 +1568,12 @@ var FloorplanRenderer = class {
         ...CENTER_ORIGIN,
         top: centreY,
         left: 0,
-        width: (text.width || 0) + 10,
+        width: (text.width || 0) + 14,
         height: pillHeight,
         rx: pillHeight / 2,
         ry: pillHeight / 2,
         fill: palette.white,
-        stroke: palette.gray,
+        stroke: "#D9D9D9",
         strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH
       });
       objects.push(pill, text);
@@ -1575,25 +1606,37 @@ var FloorplanRenderer = class {
     });
     if (plan.mode !== "inside") return null;
     const interior = tableInterior(width, height, table.shape);
-    const lineHeights = plan.lines.map((line) => line.fontSize * 1.15);
-    const total = lineHeights.reduce((sum, h) => sum + h, 0);
-    let cursor = -total / 2;
-    const texts = plan.lines.map((line, index) => {
-      const top = cursor + lineHeights[index] / 2;
-      cursor += lineHeights[index];
-      return new import_fabric.fabric.Text(line.text, {
-        ...DISABLED_OBJECT_PROPERTIES,
-        ...CENTER_ORIGIN,
-        top,
-        left: 0,
-        fontFamily: "Inter, sans-serif",
-        fontSize: line.fontSize,
-        fontWeight: index === 0 ? "600" : "normal",
-        fill: line.fill,
-        lineHeight: 1,
-        textAlign: "center"
+    const build = (sizes2) => {
+      const lineHeights = sizes2.map((size) => size * 1.15);
+      const total2 = lineHeights.reduce((sum, h) => sum + h, 0);
+      let cursor = -total2 / 2;
+      const texts2 = plan.lines.map((line, index) => {
+        const top = cursor + lineHeights[index] / 2;
+        cursor += lineHeights[index];
+        return new import_fabric.fabric.Text(line.text, {
+          ...DISABLED_OBJECT_PROPERTIES,
+          ...CENTER_ORIGIN,
+          top,
+          left: 0,
+          fontFamily: "Inter, sans-serif",
+          fontSize: sizes2[index],
+          fontWeight: index === 0 ? "700" : "normal",
+          fill: line.fill,
+          lineHeight: 1,
+          textAlign: "center"
+        });
       });
-    });
+      return { texts: texts2, total: total2 };
+    };
+    let sizes = plan.lines.map((line) => line.fontSize);
+    let { texts, total } = build(sizes);
+    const widest = Math.max(...texts.map((text) => text.width || 0));
+    const scale = Math.min(1, interior.width / widest, interior.height / total);
+    if (scale < 1) {
+      sizes = sizes.map((size) => Math.floor(size * scale));
+      if (sizes[0] < 7) return null;
+      ({ texts } = build(sizes));
+    }
     const overflows = texts.some(
       (text) => (text.width || 0) > interior.width || (text.height || 0) > interior.height
     );

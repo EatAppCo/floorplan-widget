@@ -69,3 +69,4 @@ export const shapeColors = [
  */
 export const SELECTED_TABLE_SOLID_FILL = '#128849';
 export const SELECTED_TABLE_SOLID_TEXT = '#FFFFFF';
+export const SELECTED_TABLE_SOLID_SUBTEXT = 'rgba(255,255,255,0.85)';
