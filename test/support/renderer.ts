@@ -160,6 +160,8 @@ export class FakeElement {
   listeners: Record<string, unknown[]> = {};
   parentNode: FakeElement | null = null;
   removed: FakeElement[] = [];
+  style: Record<string, string> = {};
+  rect = { left: 0, top: 0, width: 0, height: 0 };
   classList = {
     add: (name: string) => {
       this.className = [this.className, name].filter(Boolean).join(' ');
@@ -182,6 +184,10 @@ export class FakeElement {
     this.children = this.children.filter((c) => c !== child);
     child.parentNode = null;
     return child;
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
   }
 
   setAttribute(name: string, value: string) {

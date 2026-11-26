@@ -50,6 +50,11 @@ export type OnTableClickCallback = (
 ) => void;
 
 /**
+ * Called once after a drag-to-select box adds tables, with every selected id
+ */
+export type OnSelectionChangeCallback = (selectedTableIds: string[]) => void;
+
+/**
  * Callback function when a room is changed
  */
 export type OnRoomChangeCallback = (room: Room) => void;
@@ -105,6 +110,10 @@ export interface FloorplanRendererOptions {
   showRoomTabs?: boolean;
   /** Table id → labels drawn as pills under the table (max 3 + "+N"); none by default. */
   tableLabels?: Record<string, string[]>;
+  /** Mouse-drag on empty canvas (fit zoom, multi mode) selects every table in the box; default false */
+  dragToSelect?: boolean;
+  /** Fired once per completed drag-to-select box (taps keep firing onTableClick only) */
+  onSelectionChange?: OnSelectionChangeCallback;
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
   onRoomChange?: OnRoomChangeCallback;

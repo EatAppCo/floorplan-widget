@@ -354,6 +354,69 @@ var sortTablesByRenderOrder = (tables, emojiList, selectedTableIds = []) => {
   });
 };
 
+// src/helpers/selection.ts
+var classifyPointerStart = ({
+  pointerType,
+  eventType,
+  button,
+  touchCount,
+  zoom,
+  onTable,
+  dragToSelect,
+  multi,
+  pinching
+}) => {
+  const isMouse = pointerType === "mouse" && !eventType.startsWith("touch");
+  if (dragToSelect && multi && isMouse && button === 0 && touchCount <= 1 && zoom === 1 && !onTable && !pinching) {
+    return "box";
+  }
+  return zoom > 1 ? "pan" : "default";
+};
+var normalizeRect = ({ left, top, width, height }) => ({
+  left: width < 0 ? left + width : left,
+  top: height < 0 ? top + height : top,
+  width: Math.abs(width),
+  height: Math.abs(height)
+});
+var tablesInRect = (tables, rect, canvasSize, {
+  blockedIds,
+  emojiList
+}) => {
+  const box = normalizeRect(rect);
+  return tables.filter(
+    (table) => table.type === "Table" && !blockedIds.includes(table.id) && !isEmoji(table, emojiList)
+  ).filter((table) => {
+    const [x, y] = getCenterPoint(table, canvasSize);
+    return x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height;
+  }).map((table) => table.id);
+};
+var mergeSelection = (current, hits, maxSelectable) => {
+  const merged = [...current];
+  for (const id of hits) {
+    if (maxSelectable !== null && merged.length >= maxSelectable) break;
+    if (!merged.includes(id)) merged.push(id);
+  }
+  return merged;
+};
+var toCssRect = (rect, {
+  canvasWidth,
+  canvasHeight,
+  cssWidth,
+  cssHeight,
+  offsetLeft,
+  offsetTop
+}) => {
+  const box = normalizeRect(rect);
+  const scaleX = canvasWidth ? cssWidth / canvasWidth : 1;
+  const scaleY = canvasHeight ? cssHeight / canvasHeight : 1;
+  return {
+    left: offsetLeft + box.left * scaleX,
+    top: offsetTop + box.top * scaleY,
+    width: box.width * scaleX,
+    height: box.height * scaleY
+  };
+};
+
 // src/helpers/decorations.ts
 var RING_STROKE = 3;
 var RING_OUTER = 4;
@@ -517,6 +580,10 @@ var FloorplanRenderer = class {
     this.selectedAppearance = "tint";
     this.tableRings = {};
     this.showRoomTabs = true;
+    this.dragToSelect = false;
+    this.onSelectionChange = null;
+    this.boxStart = null;
+    this.boxOverlay = null;
     this.tableLabels = {};
     this.maxSelectable = null;
     this.covers = 0;
@@ -552,7 +619,7 @@ var FloorplanRenderer = class {
     this.suppressTap = false;
     this.pinchStartDistance = 0;
     this.pinchStartZoom = 1;
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -571,12 +638,14 @@ var FloorplanRenderer = class {
     this.selectedAppearance = options.selectedAppearance || "tint";
     this.tableRings = options.tableRings || {};
     this.showRoomTabs = (_a = options.showRoomTabs) != null ? _a : true;
+    this.dragToSelect = (_b = options.dragToSelect) != null ? _b : false;
+    this.onSelectionChange = options.onSelectionChange || null;
     this.tableLabels = options.tableLabels || {};
-    this.maxSelectable = (_b = options.maxSelectable) != null ? _b : null;
-    this.covers = (_c = options.covers) != null ? _c : 0;
+    this.maxSelectable = (_c = options.maxSelectable) != null ? _c : null;
+    this.covers = (_d = options.covers) != null ? _d : 0;
     this.tableGroups = options.tableGroups || [];
-    this.showBackgroundImage = (_d = options.showBackgroundImage) != null ? _d : true;
-    this.showEmojis = (_e = options.showEmojis) != null ? _e : true;
+    this.showBackgroundImage = (_e = options.showBackgroundImage) != null ? _e : true;
+    this.showEmojis = (_f = options.showEmojis) != null ? _f : true;
     this.roomUnavailableHint = options.roomUnavailableHint || "";
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
@@ -846,6 +915,7 @@ var FloorplanRenderer = class {
     if (e.touches.length !== 2) return;
     this.isPinching = true;
     this.suppressTap = true;
+    this.cancelBoxSelection();
     this.isPanning = false;
     this.pinchStartDistance = this.touchSeparation(e.touches);
     this.pinchStartZoom = this.currentZoom();
@@ -903,11 +973,27 @@ var FloorplanRenderer = class {
     return { x: e.clientX, y: e.clientY };
   }
   onPointerDown(opt) {
+    var _a;
     if (this.isPinching || this.isMultiTouch(opt.e)) return;
     this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e);
     this.dragDistance = 0;
-    this.isPanning = this.currentZoom() > 1;
+    const e = opt.e;
+    const eventType = String(e.type || "");
+    const target = opt.target;
+    const kind = classifyPointerStart({
+      pointerType: e.pointerType || (eventType.startsWith("touch") ? "touch" : "mouse"),
+      eventType,
+      button: typeof e.button === "number" ? e.button : 0,
+      touchCount: e.touches ? e.touches.length : 0,
+      zoom: this.currentZoom(),
+      onTable: target instanceof TableGroup_default && ((_a = target.tableContext) == null ? void 0 : _a.type) === "Table",
+      dragToSelect: this.dragToSelect,
+      multi: this.selectionMode === "multi",
+      pinching: this.isPinching
+    });
+    this.isPanning = kind === "pan";
+    this.boxStart = kind === "box" && this.canvas ? this.canvas.getPointer(opt.e, true) : null;
   }
   onPointerMove(opt) {
     if (this.isPinching || this.isMultiTouch(opt.e)) return;
@@ -917,6 +1003,13 @@ var FloorplanRenderer = class {
     const dy = xy.y - this.lastPointer.y;
     this.dragDistance += Math.abs(dx) + Math.abs(dy);
     this.lastPointer = xy;
+    if (this.boxStart) {
+      opt.e.preventDefault();
+      if (this.dragDistance > DRAG_THRESHOLD && this.canvas) {
+        this.updateBoxOverlay(this.canvas.getPointer(opt.e, true));
+      }
+      return;
+    }
     if (this.isPanning) {
       opt.e.preventDefault();
       this.schedulePan(dx, dy);
@@ -928,15 +1021,97 @@ var FloorplanRenderer = class {
       this.lastPointer = null;
       this.isPanning = false;
       this.dragDistance = 0;
+      this.cancelBoxSelection();
       return;
     }
     const wasDrag = this.dragDistance > DRAG_THRESHOLD;
     this.lastPointer = null;
     this.isPanning = false;
     this.dragDistance = 0;
+    const boxStart = this.boxStart;
+    if (boxStart) {
+      this.cancelBoxSelection();
+      if (wasDrag && this.canvas) {
+        this.finishBoxSelection(boxStart, this.canvas.getPointer(opt.e, true));
+        return;
+      }
+    }
     if (!wasDrag) {
       this.handleTableSelect(opt);
     }
+  }
+  /**
+   * Add every bookable table inside the dragged box to the selection (within
+   * `maxSelectable`), re-render, and tell the host once.
+   */
+  finishBoxSelection(start, end) {
+    var _a;
+    const hits = tablesInRect(
+      ((_a = this.selectedRoom) == null ? void 0 : _a.tables) || [],
+      {
+        left: start.x,
+        top: start.y,
+        width: end.x - start.x,
+        height: end.y - start.y
+      },
+      this.canvasSize,
+      { blockedIds: this.blockedTableIds, emojiList: floorEmojiList }
+    );
+    this.selectedTableIds = mergeSelection(
+      this.selectedTableIds,
+      hits,
+      this.maxSelectable
+    );
+    this.render();
+    if (this.onSelectionChange) {
+      this.onSelectionChange([...this.selectedTableIds]);
+    }
+  }
+  /**
+   * Draw (or move) the selection box overlay between the press and `end`
+   */
+  updateBoxOverlay(end) {
+    var _a;
+    const mount = this.overlayMount();
+    const upper = (_a = this.canvas) == null ? void 0 : _a.upperCanvasEl;
+    if (!mount || !upper || !this.boxStart) return;
+    if (!this.boxOverlay) {
+      this.boxOverlay = document.createElement("div");
+      this.boxOverlay.className = "floorplan-box-select";
+      mount.appendChild(this.boxOverlay);
+    }
+    const mountRect = mount.getBoundingClientRect();
+    const canvasRect = upper.getBoundingClientRect();
+    const css = toCssRect(
+      {
+        left: this.boxStart.x,
+        top: this.boxStart.y,
+        width: end.x - this.boxStart.x,
+        height: end.y - this.boxStart.y
+      },
+      {
+        canvasWidth: this.canvasSize,
+        canvasHeight: this.canvasSize,
+        cssWidth: canvasRect.width,
+        cssHeight: canvasRect.height,
+        offsetLeft: canvasRect.left - mountRect.left,
+        offsetTop: canvasRect.top - mountRect.top
+      }
+    );
+    this.boxOverlay.style.left = `${css.left}px`;
+    this.boxOverlay.style.top = `${css.top}px`;
+    this.boxOverlay.style.width = `${css.width}px`;
+    this.boxOverlay.style.height = `${css.height}px`;
+  }
+  /**
+   * Drop any in-progress box selection and its overlay
+   */
+  cancelBoxSelection() {
+    this.boxStart = null;
+    if (this.boxOverlay && this.boxOverlay.parentNode) {
+      this.boxOverlay.parentNode.removeChild(this.boxOverlay);
+    }
+    this.boxOverlay = null;
   }
   /**
    * Toggle the pressed table's selection and notify the host
@@ -1654,6 +1829,7 @@ var FloorplanRenderer = class {
    * Destroy the renderer and clean up resources
    */
   destroy() {
+    this.cancelBoxSelection();
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;

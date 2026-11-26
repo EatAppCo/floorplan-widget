@@ -110,6 +110,7 @@ export const stateOptions: Record<string, Record<string, unknown>> = {
     initialRoomId: 'features',
     tableLabels: { T1: ['Garden terrace', 'Outdoor', 'Accessible'] },
   },
+  'drag-select': { initialRoomId: 'features', dragToSelect: true },
   'solid-selected': {
     tableContent: 'inside',
     selectedAppearance: 'solid',

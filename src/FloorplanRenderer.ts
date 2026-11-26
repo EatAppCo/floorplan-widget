@@ -6,6 +6,7 @@ import {
   OnTableClickCallback,
   OnRoomChangeCallback,
   OnErrorCallback,
+  OnSelectionChangeCallback,
 } from './types';
 import {
   FLOOR_DEFAULT,
@@ -18,6 +19,12 @@ import {
   isEmoji,
   sortTablesByRenderOrder,
 } from './helpers/tables';
+import {
+  classifyPointerStart,
+  mergeSelection,
+  tablesInRect,
+  toCssRect,
+} from './helpers/selection';
 import {
   belowLabelTop,
   formatTableLabels,
@@ -64,6 +71,10 @@ export class FloorplanRenderer {
   private selectedAppearance: SelectedAppearance = 'tint';
   private tableRings: Record<string, string> = {};
   private showRoomTabs: boolean = true;
+  private dragToSelect: boolean = false;
+  private onSelectionChange: OnSelectionChangeCallback | null = null;
+  private boxStart: { x: number; y: number } | null = null;
+  private boxOverlay: HTMLElement | null = null;
   private tableLabels: Record<string, string[]> = {};
   private maxSelectable: number | null = null;
   private covers: number = 0;
@@ -124,6 +135,8 @@ export class FloorplanRenderer {
     this.selectedAppearance = options.selectedAppearance || 'tint';
     this.tableRings = options.tableRings || {};
     this.showRoomTabs = options.showRoomTabs ?? true;
+    this.dragToSelect = options.dragToSelect ?? false;
+    this.onSelectionChange = options.onSelectionChange || null;
     this.tableLabels = options.tableLabels || {};
     this.maxSelectable = options.maxSelectable ?? null;
     this.covers = options.covers ?? 0;
@@ -467,6 +480,7 @@ export class FloorplanRenderer {
 
     this.isPinching = true;
     this.suppressTap = true;
+    this.cancelBoxSelection();
     this.isPanning = false;
     this.pinchStartDistance = this.touchSeparation(e.touches);
     this.pinchStartZoom = this.currentZoom();
@@ -540,8 +554,36 @@ export class FloorplanRenderer {
     this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e as MouseEvent | TouchEvent);
     this.dragDistance = 0;
-    // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll
-    this.isPanning = this.currentZoom() > 1;
+
+    // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll.
+    // With dragToSelect, a primary mouse press off any table at fit zoom starts
+    // a selection box instead (touch keeps scrolling the page).
+    const e = opt.e as unknown as {
+      type?: string;
+      pointerType?: string;
+      button?: number;
+      touches?: TouchList;
+    };
+    const eventType = String(e.type || '');
+    const target = opt.target as unknown;
+    const kind = classifyPointerStart({
+      pointerType:
+        e.pointerType || (eventType.startsWith('touch') ? 'touch' : 'mouse'),
+      eventType,
+      button: typeof e.button === 'number' ? e.button : 0,
+      touchCount: e.touches ? e.touches.length : 0,
+      zoom: this.currentZoom(),
+      onTable:
+        target instanceof TableGroup && target.tableContext?.type === 'Table',
+      dragToSelect: this.dragToSelect,
+      multi: this.selectionMode === 'multi',
+      pinching: this.isPinching,
+    });
+    this.isPanning = kind === 'pan';
+    this.boxStart =
+      kind === 'box' && this.canvas
+        ? this.canvas.getPointer(opt.e, true)
+        : null;
   }
 
   private onPointerMove(opt: fabric.IEvent<MouseEvent>): void {
@@ -553,6 +595,14 @@ export class FloorplanRenderer {
     const dy = xy.y - this.lastPointer.y;
     this.dragDistance += Math.abs(dx) + Math.abs(dy);
     this.lastPointer = xy;
+
+    if (this.boxStart) {
+      opt.e.preventDefault();
+      if (this.dragDistance > DRAG_THRESHOLD && this.canvas) {
+        this.updateBoxOverlay(this.canvas.getPointer(opt.e, true));
+      }
+      return;
+    }
 
     if (this.isPanning) {
       opt.e.preventDefault();
@@ -568,6 +618,7 @@ export class FloorplanRenderer {
       this.lastPointer = null;
       this.isPanning = false;
       this.dragDistance = 0;
+      this.cancelBoxSelection();
       return;
     }
 
@@ -576,10 +627,100 @@ export class FloorplanRenderer {
     this.isPanning = false;
     this.dragDistance = 0;
 
+    const boxStart = this.boxStart;
+    if (boxStart) {
+      this.cancelBoxSelection();
+      if (wasDrag && this.canvas) {
+        this.finishBoxSelection(boxStart, this.canvas.getPointer(opt.e, true));
+        return;
+      }
+    }
+
     // A drag pans the canvas; only a clean press selects a table
     if (!wasDrag) {
       this.handleTableSelect(opt);
     }
+  }
+
+  /**
+   * Add every bookable table inside the dragged box to the selection (within
+   * `maxSelectable`), re-render, and tell the host once.
+   */
+  private finishBoxSelection(
+    start: { x: number; y: number },
+    end: { x: number; y: number }
+  ): void {
+    const hits = tablesInRect(
+      this.selectedRoom?.tables || [],
+      {
+        left: start.x,
+        top: start.y,
+        width: end.x - start.x,
+        height: end.y - start.y,
+      },
+      this.canvasSize,
+      { blockedIds: this.blockedTableIds, emojiList: floorEmojiList }
+    );
+    this.selectedTableIds = mergeSelection(
+      this.selectedTableIds,
+      hits,
+      this.maxSelectable
+    );
+    this.render();
+    if (this.onSelectionChange) {
+      this.onSelectionChange([...this.selectedTableIds]);
+    }
+  }
+
+  /**
+   * Draw (or move) the selection box overlay between the press and `end`
+   */
+  private updateBoxOverlay(end: { x: number; y: number }): void {
+    const mount = this.overlayMount();
+    const upper = (this.canvas as any)?.upperCanvasEl as
+      | HTMLElement
+      | undefined;
+    if (!mount || !upper || !this.boxStart) return;
+
+    if (!this.boxOverlay) {
+      this.boxOverlay = document.createElement('div');
+      this.boxOverlay.className = 'floorplan-box-select';
+      mount.appendChild(this.boxOverlay);
+    }
+
+    const mountRect = mount.getBoundingClientRect();
+    const canvasRect = upper.getBoundingClientRect();
+    const css = toCssRect(
+      {
+        left: this.boxStart.x,
+        top: this.boxStart.y,
+        width: end.x - this.boxStart.x,
+        height: end.y - this.boxStart.y,
+      },
+      {
+        canvasWidth: this.canvasSize,
+        canvasHeight: this.canvasSize,
+        cssWidth: canvasRect.width,
+        cssHeight: canvasRect.height,
+        offsetLeft: canvasRect.left - mountRect.left,
+        offsetTop: canvasRect.top - mountRect.top,
+      }
+    );
+    this.boxOverlay.style.left = `${css.left}px`;
+    this.boxOverlay.style.top = `${css.top}px`;
+    this.boxOverlay.style.width = `${css.width}px`;
+    this.boxOverlay.style.height = `${css.height}px`;
+  }
+
+  /**
+   * Drop any in-progress box selection and its overlay
+   */
+  private cancelBoxSelection(): void {
+    this.boxStart = null;
+    if (this.boxOverlay && this.boxOverlay.parentNode) {
+      this.boxOverlay.parentNode.removeChild(this.boxOverlay);
+    }
+    this.boxOverlay = null;
   }
 
   /**
@@ -1502,6 +1643,8 @@ export class FloorplanRenderer {
    * Destroy the renderer and clean up resources
    */
   public destroy(): void {
+    this.cancelBoxSelection();
+
     // Stop reacting to container resizes
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();

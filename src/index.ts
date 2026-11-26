@@ -32,6 +32,7 @@ export type {
   OnTableClickCallback,
   OnRoomChangeCallback,
   OnErrorCallback,
+  OnSelectionChangeCallback,
   TableDimensions,
 } from './types';
 

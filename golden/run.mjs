@@ -27,7 +27,13 @@ const ALL_STATES = [
   'pinch',
 ];
 // Candidate-only checks of opt-in features, run by `npm run golden:features`.
-const FEATURE_STATES = ['inside-text', 'solid-selected', 'rings', 'labels'];
+const FEATURE_STATES = [
+  'inside-text',
+  'solid-selected',
+  'rings',
+  'labels',
+  'drag-select',
+];
 const states =
   only === 'features' ? FEATURE_STATES : only ? only.split(',') : ALL_STATES;
 
@@ -50,6 +56,8 @@ async function snapshot(page) {
       vpt: r.canvas.viewportTransform.slice(),
       minimap: minimap ? getComputedStyle(minimap).display : null,
       background: background ? background.style.transform : null,
+      selectionEvents: g.selectionEvents.slice(),
+      boxLeft: !!document.querySelector('.floorplan-box-select'),
       emojiDrawn: r.canvas
         .getObjects()
         .some((o) => o.tableContext && o.tableContext.number === '🌳'),
@@ -139,6 +147,28 @@ const interactions = {
   pinch: async (page) => pinch(page, 'sq'),
   'inside-text': async () => {},
   rings: async () => {},
+  'drag-select': async (page) => {
+    const rect = await page.evaluate(() => {
+      const r = document
+        .querySelector('canvas.upper-canvas')
+        .getBoundingClientRect();
+      return { left: r.left, top: r.top, width: r.width, height: r.height };
+    });
+    const at = (fx, fy) => ({
+      x: Math.round(rect.left + fx * rect.width),
+      y: Math.round(rect.top + fy * rect.height),
+    });
+    const from = at(0.05, 0.05);
+    const to = at(0.56, 0.36);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 10 });
+    const midDrag = await page.evaluate(
+      () => !!document.querySelector('.floorplan-box-select')
+    );
+    await page.mouse.up();
+    if (!midDrag) throw new Error('no selection box was drawn during the drag');
+  },
   labels: async () => {},
   'solid-selected': async (page) => {
     const p = await tablePoint(page, 'T1');
@@ -268,6 +298,14 @@ const expectations = {
         )
       );
     }
+  },
+  'drag-select': (s) => {
+    check(
+      JSON.stringify(s.selectionEvents) === JSON.stringify([['T1', 'C1']]),
+      `selection events ${JSON.stringify(s.selectionEvents)}`
+    );
+    check(s.selected.join() === 'T1,C1', `selected ${s.selected}`);
+    check(!s.boxLeft, 'selection box left in the DOM');
   },
   rings: (s) => {
     const rings = s.layers.filter(

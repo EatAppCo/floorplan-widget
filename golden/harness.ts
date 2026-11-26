@@ -47,6 +47,7 @@ async function start() {
     ...baseOptions,
     ...extra,
     onError: (error: Error) => golden.errors.push(error.message),
+    onSelectionChange: (ids: string[]) => golden.selectionEvents.push(ids),
   } as any);
 
   await frame();
