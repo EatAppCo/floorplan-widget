@@ -6,6 +6,7 @@ import {
   OnTableClickCallback,
   OnRoomChangeCallback,
   OnErrorCallback,
+  OnSelectionChangeCallback,
 } from './types';
 import {
   FLOOR_DEFAULT,
@@ -18,6 +19,32 @@ import {
   isEmoji,
   sortTablesByRenderOrder,
 } from './helpers/tables';
+import {
+  classifyPointerStart,
+  mergeSelection,
+  sameIds,
+  sameRecord,
+  tablesInRect,
+  toCssRect,
+} from './helpers/selection';
+import {
+  belowLabelTop,
+  formatTableLabels,
+  renderLayers,
+  separateLabelStacks,
+  RING_STROKE,
+  ringColorFor,
+  ringGeometry,
+  ringGlow,
+} from './helpers/decorations';
+import {
+  SelectedAppearance,
+  showNumberBadge,
+  TableContent,
+  tableInsideText,
+  tableInterior,
+  tableShapeStyle,
+} from './helpers/tableStyle';
 import TableGroup from './objects/TableGroup';
 import LabelGroup from './objects/LabelGroup';
 import './FloorplanRenderer.css';
@@ -44,6 +71,15 @@ export class FloorplanRenderer {
   private paidTableIds: string[] = [];
   private selectedTableIds: string[] = [];
   private selectionMode: 'single' | 'multi' = 'multi';
+  private tableContent: TableContent = 'badge';
+  private selectedAppearance: SelectedAppearance = 'tint';
+  private tableRings: Record<string, string> = {};
+  private showRoomTabs: boolean = true;
+  private dragToSelect: boolean = false;
+  private onSelectionChange: OnSelectionChangeCallback | null = null;
+  private boxStart: { x: number; y: number } | null = null;
+  private boxOverlay: HTMLElement | null = null;
+  private tableLabels: Record<string, string[]> = {};
   private maxSelectable: number | null = null;
   private covers: number = 0;
   private tableGroups: string[][] = [];
@@ -99,6 +135,13 @@ export class FloorplanRenderer {
     this.preferredTableIds = options.preferredTableIds || [];
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || 'multi';
+    this.tableContent = options.tableContent || 'badge';
+    this.selectedAppearance = options.selectedAppearance || 'tint';
+    this.tableRings = options.tableRings || {};
+    this.showRoomTabs = options.showRoomTabs ?? true;
+    this.dragToSelect = options.dragToSelect ?? false;
+    this.onSelectionChange = options.onSelectionChange || null;
+    this.tableLabels = options.tableLabels || {};
     this.maxSelectable = options.maxSelectable ?? null;
     this.covers = options.covers ?? 0;
     this.tableGroups = options.tableGroups || [];
@@ -441,6 +484,7 @@ export class FloorplanRenderer {
 
     this.isPinching = true;
     this.suppressTap = true;
+    this.cancelBoxSelection();
     this.isPanning = false;
     this.pinchStartDistance = this.touchSeparation(e.touches);
     this.pinchStartZoom = this.currentZoom();
@@ -514,8 +558,36 @@ export class FloorplanRenderer {
     this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e as MouseEvent | TouchEvent);
     this.dragDistance = 0;
-    // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll
-    this.isPanning = this.currentZoom() > 1;
+
+    // Only a zoomed-in view pans; at fit-zoom the page keeps its native scroll.
+    // With dragToSelect, a primary mouse press off any table at fit zoom starts
+    // a selection box instead (touch keeps scrolling the page).
+    const e = opt.e as unknown as {
+      type?: string;
+      pointerType?: string;
+      button?: number;
+      touches?: TouchList;
+    };
+    const eventType = String(e.type || '');
+    const target = opt.target as unknown;
+    const kind = classifyPointerStart({
+      pointerType:
+        e.pointerType || (eventType.startsWith('touch') ? 'touch' : 'mouse'),
+      eventType,
+      button: typeof e.button === 'number' ? e.button : 0,
+      touchCount: e.touches ? e.touches.length : 0,
+      zoom: this.currentZoom(),
+      onTable:
+        target instanceof TableGroup && target.tableContext?.type === 'Table',
+      dragToSelect: this.dragToSelect,
+      multi: this.selectionMode === 'multi',
+      pinching: this.isPinching,
+    });
+    this.isPanning = kind === 'pan';
+    this.boxStart =
+      kind === 'box' && this.canvas
+        ? this.canvas.getPointer(opt.e, true)
+        : null;
   }
 
   private onPointerMove(opt: fabric.IEvent<MouseEvent>): void {
@@ -527,6 +599,14 @@ export class FloorplanRenderer {
     const dy = xy.y - this.lastPointer.y;
     this.dragDistance += Math.abs(dx) + Math.abs(dy);
     this.lastPointer = xy;
+
+    if (this.boxStart) {
+      opt.e.preventDefault();
+      if (this.dragDistance > DRAG_THRESHOLD && this.canvas) {
+        this.updateBoxOverlay(this.canvas.getPointer(opt.e, true));
+      }
+      return;
+    }
 
     if (this.isPanning) {
       opt.e.preventDefault();
@@ -542,6 +622,7 @@ export class FloorplanRenderer {
       this.lastPointer = null;
       this.isPanning = false;
       this.dragDistance = 0;
+      this.cancelBoxSelection();
       return;
     }
 
@@ -550,10 +631,100 @@ export class FloorplanRenderer {
     this.isPanning = false;
     this.dragDistance = 0;
 
+    const boxStart = this.boxStart;
+    if (boxStart) {
+      this.cancelBoxSelection();
+      if (wasDrag && this.canvas) {
+        this.finishBoxSelection(boxStart, this.canvas.getPointer(opt.e, true));
+        return;
+      }
+    }
+
     // A drag pans the canvas; only a clean press selects a table
     if (!wasDrag) {
       this.handleTableSelect(opt);
     }
+  }
+
+  /**
+   * Add every bookable table inside the dragged box to the selection (within
+   * `maxSelectable`), re-render, and tell the host once.
+   */
+  private finishBoxSelection(
+    start: { x: number; y: number },
+    end: { x: number; y: number }
+  ): void {
+    const hits = tablesInRect(
+      this.selectedRoom?.tables || [],
+      {
+        left: start.x,
+        top: start.y,
+        width: end.x - start.x,
+        height: end.y - start.y,
+      },
+      this.canvasSize,
+      { blockedIds: this.blockedTableIds, emojiList: floorEmojiList }
+    );
+    this.selectedTableIds = mergeSelection(
+      this.selectedTableIds,
+      hits,
+      this.maxSelectable
+    );
+    this.render();
+    if (this.onSelectionChange) {
+      this.onSelectionChange([...this.selectedTableIds]);
+    }
+  }
+
+  /**
+   * Draw (or move) the selection box overlay between the press and `end`
+   */
+  private updateBoxOverlay(end: { x: number; y: number }): void {
+    const mount = this.overlayMount();
+    const upper = (this.canvas as any)?.upperCanvasEl as
+      | HTMLElement
+      | undefined;
+    if (!mount || !upper || !this.boxStart) return;
+
+    if (!this.boxOverlay) {
+      this.boxOverlay = document.createElement('div');
+      this.boxOverlay.className = 'floorplan-box-select';
+      mount.appendChild(this.boxOverlay);
+    }
+
+    const mountRect = mount.getBoundingClientRect();
+    const canvasRect = upper.getBoundingClientRect();
+    const css = toCssRect(
+      {
+        left: this.boxStart.x,
+        top: this.boxStart.y,
+        width: end.x - this.boxStart.x,
+        height: end.y - this.boxStart.y,
+      },
+      {
+        canvasWidth: this.canvasSize,
+        canvasHeight: this.canvasSize,
+        cssWidth: canvasRect.width,
+        cssHeight: canvasRect.height,
+        offsetLeft: canvasRect.left - mountRect.left,
+        offsetTop: canvasRect.top - mountRect.top,
+      }
+    );
+    this.boxOverlay.style.left = `${css.left}px`;
+    this.boxOverlay.style.top = `${css.top}px`;
+    this.boxOverlay.style.width = `${css.width}px`;
+    this.boxOverlay.style.height = `${css.height}px`;
+  }
+
+  /**
+   * Drop any in-progress box selection and its overlay
+   */
+  private cancelBoxSelection(): void {
+    this.boxStart = null;
+    if (this.boxOverlay && this.boxOverlay.parentNode) {
+      this.boxOverlay.parentNode.removeChild(this.boxOverlay);
+    }
+    this.boxOverlay = null;
   }
 
   /**
@@ -837,6 +1008,9 @@ export class FloorplanRenderer {
    * Render room tabs
    */
   private renderTabs(): void {
+    // Hosts that render their own room navigation can opt out entirely
+    if (!this.showRoomTabs) return;
+
     // Create tabs container if it doesn't exist
     if (!this.tabsContainerElement && this.containerElement) {
       this.tabsContainerElement = document.createElement('div');
@@ -987,6 +1161,192 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Opt-in ring around a table, drawn as its own non-interactive object behind
+   * every table so it never enlarges the table's click target.
+   */
+  private createRing(table: Table, color: string): fabric.Object {
+    const { top, left, width, height } = getDimensionsV2(
+      table,
+      this.canvasSize
+    );
+    const geometry = ringGeometry({ shape: table.shape, width, height });
+    const half = RING_STROKE / 2;
+    const shapeFor = (
+      grow: number,
+      options: Record<string, unknown>
+    ): fabric.Object =>
+      geometry.kind === 'ellipse'
+        ? new fabric.Ellipse({
+            ...CENTER_ORIGIN,
+            ...options,
+            rx: geometry.rx + grow,
+            ry: geometry.ry + grow,
+          })
+        : new fabric.Rect({
+            ...CENTER_ORIGIN,
+            ...options,
+            width: geometry.width + grow * 2,
+            height: geometry.height + grow * 2,
+            rx: geometry.rx + grow,
+            ry: geometry.rx + grow,
+          });
+
+    // A filled silhouette, hidden under the opaque table, casts the soft glow:
+    // only its blurred shadow spreads out past the band, so the band keeps its
+    // pastel tone and the falloff shows beyond it.
+    // Two stacked silhouettes give the broad wash the design has.
+    const glowShape = () =>
+      shapeFor(-half, {
+        fill: color,
+        strokeWidth: 0,
+        shadow: new fabric.Shadow({
+          color: ringGlow(color, 0.9),
+          blur: 24,
+          offsetX: 0,
+          offsetY: 0,
+        }),
+      });
+    const band = shapeFor(0, {
+      fill: 'transparent',
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.55,
+    });
+
+    const ring = new fabric.Group([glowShape(), glowShape(), band], {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      top,
+      left,
+      angle: table.rotation || 0,
+      perPixelTargetFind: false,
+      // Cached groups clip their shadow to the cache bounds (a visible box)
+      objectCaching: false,
+    });
+    (ring as fabric.Group & { _ring?: boolean })._ring = true;
+    return ring;
+  }
+
+  /**
+   * Opt-in stack of label pills under a table (e.g. seating areas). Unrotated,
+   * non-interactive, top-anchored so it grows downwards from the table.
+   */
+  private createTableLabels(table: Table): LabelGroup | null {
+    const texts = formatTableLabels(this.tableLabels[table.id] || []);
+    if (texts.length === 0) return null;
+
+    const pillHeight = 16;
+    const gap = 2;
+    const objects: fabric.Object[] = [];
+
+    texts.forEach((label, index) => {
+      const centreY = index * (pillHeight + gap) + pillHeight / 2;
+      const text = new fabric.Text(label, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        fontFamily: 'Inter, sans-serif',
+        fill: '#555555',
+        fontSize: 10,
+        fontWeight: '600',
+        lineHeight: 1,
+        textAlign: 'center',
+      });
+      const pill = new fabric.Rect({
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        width: (text.width || 0) + 14,
+        height: pillHeight,
+        rx: pillHeight / 2,
+        ry: pillHeight / 2,
+        fill: palette.white,
+        stroke: '#D9D9D9',
+        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+      });
+      objects.push(pill, text);
+    });
+
+    return new LabelGroup(objects, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      originX: 'center',
+      originY: 'top',
+      _relatedTableId: table.id,
+      _positionOnTable: 'below',
+    });
+  }
+
+  /**
+   * Text objects for the number (and covers) inside a table, centred and sized by
+   * `tableInsideText`. Returns null when the text cannot fit — either by the size
+   * estimate or by Fabric's real text metrics — so the caller falls back to the
+   * number badge and nothing ever extends past the table's own pixels.
+   */
+  private createInsideText(
+    table: Table,
+    {
+      width,
+      height,
+      isSelected,
+    }: { width: number; height: number; isSelected: boolean }
+  ): fabric.Object[] | null {
+    const plan = tableInsideText(table, {
+      width,
+      height,
+      shape: table.shape,
+      isSelected,
+      selectedAppearance: this.selectedAppearance,
+    });
+    if (plan.mode !== 'inside') return null;
+
+    const interior = tableInterior(width, height, table.shape);
+    const build = (sizes: number[]) => {
+      const lineHeights = sizes.map((size) => size * 1.15);
+      const total = lineHeights.reduce((sum, h) => sum + h, 0);
+      let cursor = -total / 2;
+      const texts = plan.lines.map((line, index) => {
+        const top = cursor + lineHeights[index] / 2;
+        cursor += lineHeights[index];
+        return new fabric.Text(line.text, {
+          ...DISABLED_OBJECT_PROPERTIES,
+          ...CENTER_ORIGIN,
+          top,
+          left: 0,
+          fontFamily: 'Inter, sans-serif',
+          fontSize: sizes[index],
+          fontWeight: index === 0 ? '700' : 'normal',
+          fill: line.fill,
+          lineHeight: 1,
+          textAlign: 'center',
+        });
+      });
+      return { texts, total };
+    };
+
+    // Fabric's real metrics can exceed the estimate (e.g. bold glyphs): shrink
+    // every line together to fit, and only give up below the minimum size.
+    let sizes = plan.lines.map((line) => line.fontSize);
+    let { texts, total } = build(sizes);
+    const widest = Math.max(...texts.map((text) => text.width || 0));
+    const scale = Math.min(1, interior.width / widest, interior.height / total);
+    if (scale < 1) {
+      sizes = sizes.map((size) => Math.floor(size * scale));
+      if (sizes[0] < 7) return null;
+      ({ texts } = build(sizes));
+    }
+
+    const overflows = texts.some(
+      (text) =>
+        (text.width || 0) > interior.width ||
+        (text.height || 0) > interior.height
+    );
+    return overflows ? null : texts;
+  }
+
+  /**
    * Create a table object for rendering on canvas
    */
   private createTableObject(table: Table): {
@@ -1010,11 +1370,17 @@ export class FloorplanRenderer {
       const isPaid = this.paidTableIds.includes(table.id);
 
       // Table object options
+      const style = tableShapeStyle({
+        isShape,
+        isEmoji: isEmojiType,
+        isBlocked,
+        isSelected,
+        color,
+        selectedAppearance: this.selectedAppearance,
+      });
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: isSelected
-          ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH
-          : FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: style.strokeWidth,
         rx: isEmojiType
           ? 0
           : isRectangleShape
@@ -1026,22 +1392,8 @@ export class FloorplanRenderer {
             ? FLOOR_DEFAULT.TABLE_RADIUS
             : Math.abs(height) / 2,
         strokeUniform: true,
-        stroke: isShape
-          ? 'transparent'
-          : isBlocked
-            ? 'transparent'
-            : isSelected
-              ? DEFAULT_TABLE_PALETTE.selectedStroke
-              : DEFAULT_TABLE_PALETTE.stroke,
-        fill: isEmojiType
-          ? 'transparent'
-          : isBlocked
-            ? DEFAULT_TABLE_PALETTE.blocked
-            : isSelected
-              ? DEFAULT_TABLE_PALETTE.selectedFill
-              : isShape
-                ? color || 'transparent'
-                : DEFAULT_TABLE_PALETTE.fill,
+        stroke: style.stroke,
+        fill: style.fill,
         perPixelTargetFind: true,
       };
 
@@ -1072,6 +1424,20 @@ export class FloorplanRenderer {
         groupObjects.push(this.createShapeLabel(table));
       }
 
+      // Opt-in: number + covers inside the table, rotating with it
+      let insideMode: 'inside' | 'badge' = 'badge';
+      if (this.tableContent === 'inside' && isTable && !isEmojiType) {
+        const insideObjects = this.createInsideText(table, {
+          width,
+          height,
+          isSelected,
+        });
+        if (insideObjects) {
+          insideMode = 'inside';
+          groupObjects.push(...insideObjects);
+        }
+      }
+
       const tableGroup = new TableGroup(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
@@ -1083,12 +1449,19 @@ export class FloorplanRenderer {
         hoverCursor: isTable && !isBlocked ? 'pointer' : 'default',
       });
 
-      // The bottom slot holds one badge: `$` takes precedence, else the preferred number
+      // The bottom slot holds one badge: `$` takes precedence, else the number badge
       let labelGroup: LabelGroup | null = null;
       if (!isEmojiType && !isBlocked && isTable) {
         if (isPaid) {
           labelGroup = this.createPaymentLabel(table);
-        } else if (isPreferred) {
+        } else if (
+          showNumberBadge({
+            tableContent: this.tableContent,
+            insideMode,
+            isPreferred,
+            isPaid,
+          })
+        ) {
           labelGroup = this.createTableNumberLabel(table, isSelected);
         }
       }
@@ -1110,13 +1483,32 @@ export class FloorplanRenderer {
   /**
    * Position the label relative to its table group
    */
-  private positionLabel(tableGroup: TableGroup, labelGroup: LabelGroup): void {
+  private positionLabel(
+    tableGroup: TableGroup,
+    labelGroup: LabelGroup,
+    badgeGroup: LabelGroup | null = null
+  ): void {
     // Labels live in the same canvas coordinate space as their tables. Using
     // the default bounding rect applies the current viewport transform, so a
     // re-render while zoomed (for example after selecting a table) stores
     // screen-space coordinates that Fabric then zooms and pans a second time.
     const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === 'Shape';
+
+    // Below-table labels are top-anchored under the table, or under its badge
+    if (labelGroup._positionOnTable === 'below') {
+      const badgeRect = badgeGroup
+        ? badgeGroup.getBoundingRect(true, true)
+        : null;
+      labelGroup.set({
+        top: belowLabelTop({
+          tableBottom: boundingRect.top + boundingRect.height,
+          badgeBottom: badgeRect ? badgeRect.top + badgeRect.height : undefined,
+        }),
+        left: boundingRect.left + boundingRect.width / 2,
+      });
+      return;
+    }
 
     // The `$` badge straddles the table's bottom-right corner (per Figma)
     if (labelGroup._positionOnTable === 'corner') {
@@ -1216,16 +1608,51 @@ export class FloorplanRenderer {
         this.selectedTableIds
       );
 
-      // Create and add objects for each table
-      sortedTables.forEach((table) => {
+      // Layers: décor, then rings (so they never cover a table), then tables and
+      // their badges in the existing order, then below-table labels on top.
+      // Without rings or labels this is exactly the original single pass.
+      const { decor, tables } = renderLayers(sortedTables);
+      const addWithBadge = (table: Table) => {
         const { tableGroup, labelGroup } = this.createTableObject(table);
-
         this.canvas!.add(tableGroup as any);
-
         if (labelGroup) {
           this.positionLabel(tableGroup, labelGroup);
           this.canvas!.add(labelGroup as any);
         }
+        return { tableGroup, labelGroup };
+      };
+
+      decor.forEach(addWithBadge);
+
+      tables.forEach((table) => {
+        const color = ringColorFor(
+          table,
+          this.tableRings,
+          this.blockedTableIds.includes(table.id)
+        );
+        if (color) this.canvas!.add(this.createRing(table, color) as any);
+      });
+
+      const belowLabels: Array<[TableGroup, LabelGroup, LabelGroup | null]> =
+        [];
+      tables.forEach((table) => {
+        const { tableGroup, labelGroup } = addWithBadge(table);
+        const labels = this.createTableLabels(table);
+        if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
+      });
+
+      // Place every stack under its table, then push down any that would cover
+      // a neighbour's (tables set edge to edge have overlapping pills).
+      const boxes = belowLabels.map(([tableGroup, labels, badge]) => {
+        this.positionLabel(tableGroup, labels, badge);
+        labels.setCoords();
+        return labels.getBoundingRect(true, true);
+      });
+      const tops = separateLabelStacks(boxes);
+      belowLabels.forEach(([, labels], index) => {
+        const shift = tops[index] - boxes[index].top;
+        if (shift) labels.set({ top: (labels.top || 0) + shift }).setCoords();
+        this.canvas!.add(labels as any);
       });
 
       this.canvas.renderAll();
@@ -1274,9 +1701,56 @@ export class FloorplanRenderer {
   }
 
   /**
+   * The current selection (a copy).
+   */
+  public getSelectedTableIds(): string[] {
+    return [...this.selectedTableIds];
+  }
+
+  /**
+   * Replace the selection without re-creating the renderer (keeps zoom and pan).
+   * Blocked ids are dropped and `maxSelectable` applies; no callbacks fire.
+   */
+  public setSelectedTableIds(ids: string[]): void {
+    if (!this.canvas) return;
+
+    let next = Array.from(new Set(ids)).filter(
+      (id) => !this.blockedTableIds.includes(id)
+    );
+    if (this.maxSelectable !== null) next = next.slice(0, this.maxSelectable);
+    if (sameIds(next, this.selectedTableIds)) return;
+
+    this.selectedTableIds = next;
+    this.render();
+  }
+
+  /**
+   * Replace the table rings (pass {} to remove them). Keeps zoom and pan; the
+   * minimap keeps its last capture, as it does for selection changes.
+   */
+  public setTableRings(rings: Record<string, string>): void {
+    if (!this.canvas || sameRecord(rings, this.tableRings)) return;
+
+    this.tableRings = { ...rings };
+    this.render();
+  }
+
+  /**
+   * Replace the below-table labels (pass {} to remove them). Keeps zoom and pan.
+   */
+  public setTableLabels(labels: Record<string, string[]>): void {
+    if (!this.canvas || sameRecord(labels, this.tableLabels)) return;
+
+    this.tableLabels = { ...labels };
+    this.render();
+  }
+
+  /**
    * Destroy the renderer and clean up resources
    */
   public destroy(): void {
+    this.cancelBoxSelection();
+
     // Stop reacting to container resizes
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();

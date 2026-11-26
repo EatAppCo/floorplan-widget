@@ -50,6 +50,11 @@ export type OnTableClickCallback = (
 ) => void;
 
 /**
+ * Called once after a drag-to-select box adds tables, with every selected id
+ */
+export type OnSelectionChangeCallback = (selectedTableIds: string[]) => void;
+
+/**
  * Callback function when a room is changed
  */
 export type OnRoomChangeCallback = (room: Room) => void;
@@ -91,6 +96,24 @@ export interface FloorplanRendererOptions {
    */
   roomUnavailableHint?: string;
   selectionMode?: 'single' | 'multi';
+  /**
+   * What a table shows: `'badge'` (default) is the number badge under preferred tables;
+   * `'inside'` draws the number and covers inside every table, falling back to the badge
+   * when the table is too small for the text.
+   */
+  tableContent?: 'badge' | 'inside';
+  /** Selected tables: `'tint'` (default, light green) or `'solid'` (green with white text) */
+  selectedAppearance?: 'tint' | 'solid';
+  /** Table id → ring colour (e.g. a section). Rings are drawn behind tables; none by default. */
+  tableRings?: Record<string, string>;
+  /** Show the room tabs above the plan (default true); hosts with their own room navigation pass false */
+  showRoomTabs?: boolean;
+  /** Table id → labels drawn as pills under the table (max 3 + "+N"); none by default. */
+  tableLabels?: Record<string, string[]>;
+  /** Mouse-drag on empty canvas (fit zoom, multi mode) selects every table in the box; default false */
+  dragToSelect?: boolean;
+  /** Fired once per completed drag-to-select box (taps keep firing onTableClick only) */
+  onSelectionChange?: OnSelectionChangeCallback;
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
   onRoomChange?: OnRoomChangeCallback;

@@ -161,6 +161,9 @@ var shapeColors = [
   "#D1ADC1",
   "#AFC1EC"
 ];
+var SELECTED_TABLE_SOLID_FILL = "#128849";
+var SELECTED_TABLE_SOLID_TEXT = "#FFFFFF";
+var SELECTED_TABLE_SOLID_SUBTEXT = "rgba(255,255,255,0.85)";
 
 // src/config/emojis.ts
 var floorEmojiList = [
@@ -352,6 +355,231 @@ var sortTablesByRenderOrder = (tables, emojiList, selectedTableIds = []) => {
   });
 };
 
+// src/helpers/selection.ts
+var classifyPointerStart = ({
+  pointerType,
+  eventType,
+  button,
+  touchCount,
+  zoom,
+  onTable,
+  dragToSelect,
+  multi,
+  pinching
+}) => {
+  const isMouse = pointerType === "mouse" && !eventType.startsWith("touch");
+  if (dragToSelect && multi && isMouse && button === 0 && touchCount <= 1 && zoom === 1 && !onTable && !pinching) {
+    return "box";
+  }
+  return zoom > 1 ? "pan" : "default";
+};
+var normalizeRect = ({ left, top, width, height }) => ({
+  left: width < 0 ? left + width : left,
+  top: height < 0 ? top + height : top,
+  width: Math.abs(width),
+  height: Math.abs(height)
+});
+var tablesInRect = (tables, rect, canvasSize, {
+  blockedIds,
+  emojiList
+}) => {
+  const box = normalizeRect(rect);
+  return tables.filter(
+    (table) => table.type === "Table" && !blockedIds.includes(table.id) && !isEmoji(table, emojiList)
+  ).filter((table) => {
+    const [x, y] = getCenterPoint(table, canvasSize);
+    return x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height;
+  }).map((table) => table.id);
+};
+var mergeSelection = (current, hits, maxSelectable) => {
+  const merged = [...current];
+  for (const id of hits) {
+    if (maxSelectable !== null && merged.length >= maxSelectable) break;
+    if (!merged.includes(id)) merged.push(id);
+  }
+  return merged;
+};
+var sameIds = (a, b) => a.length === b.length && a.every((id) => b.includes(id));
+var toCssRect = (rect, {
+  canvasWidth,
+  canvasHeight,
+  cssWidth,
+  cssHeight,
+  offsetLeft,
+  offsetTop
+}) => {
+  const box = normalizeRect(rect);
+  const scaleX = canvasWidth ? cssWidth / canvasWidth : 1;
+  const scaleY = canvasHeight ? cssHeight / canvasHeight : 1;
+  return {
+    left: offsetLeft + box.left * scaleX,
+    top: offsetTop + box.top * scaleY,
+    width: box.width * scaleX,
+    height: box.height * scaleY
+  };
+};
+var sameRecord = (a, b) => {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+    return left === right;
+  });
+};
+
+// src/helpers/decorations.ts
+var RING_STROKE = 8;
+var RING_OUTER = 6;
+var LABEL_GAP = RING_OUTER;
+var formatTableLabels = (labels, {
+  maxLabels = 3,
+  maxChars = 16
+} = {}) => {
+  const unique = [];
+  labels.forEach((label) => {
+    const trimmed = (label || "").trim();
+    if (trimmed && !unique.includes(trimmed)) unique.push(trimmed);
+  });
+  const shown = unique.slice(0, maxLabels).map(
+    (label) => Array.from(label).length > maxChars ? `${Array.from(label).slice(0, maxChars - 1).join("")}\u2026` : label
+  );
+  const hidden = unique.length - shown.length;
+  return hidden > 0 ? [...shown, `+${hidden}`] : shown;
+};
+var ringGeometry = ({
+  shape,
+  width,
+  height
+}) => {
+  const centreline = RING_OUTER - RING_STROKE / 2;
+  if (shape === "circle") {
+    return {
+      kind: "ellipse",
+      rx: Math.abs(width) / 2 + centreline,
+      ry: Math.abs(height) / 2 + centreline
+    };
+  }
+  return {
+    kind: "rect",
+    width: Math.abs(width) + centreline * 2,
+    height: Math.abs(height) + centreline * 2,
+    rx: FLOOR_DEFAULT.TABLE_RADIUS + centreline
+  };
+};
+var ringColorFor = (table, rings, isBlocked) => {
+  if (isBlocked || table.type !== "Table") return null;
+  if (isEmoji(table, floorEmojiList)) return null;
+  return rings[table.id] || null;
+};
+var belowLabelTop = ({
+  tableBottom,
+  badgeBottom
+}) => Math.max(tableBottom, badgeBottom != null ? badgeBottom : tableBottom) + LABEL_GAP;
+var LABEL_STACK_GAP = 2;
+var separateLabelStacks = (boxes) => {
+  const order = boxes.map((box, index) => ({ box, index })).sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+  const placed = [];
+  const tops = new Array(boxes.length);
+  order.forEach(({ box, index }) => {
+    let top = box.top;
+    let blocker;
+    do {
+      blocker = placed.find(
+        (other) => box.left < other.left + other.width && other.left < box.left + box.width && top < other.top + other.height + LABEL_STACK_GAP && other.top < top + box.height + LABEL_STACK_GAP
+      );
+      if (blocker) top = blocker.top + blocker.height + LABEL_STACK_GAP;
+    } while (blocker);
+    placed.push({ ...box, top });
+    tops[index] = top;
+  });
+  return tops;
+};
+var renderLayers = (sorted) => ({
+  decor: sorted.filter((table) => table.type === "Shape"),
+  tables: sorted.filter((table) => table.type !== "Shape")
+});
+var ringGlow = (color, alpha = 0.45) => {
+  const hex = color.replace(/^#/, "");
+  const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "rgba(0, 0, 0, 0)";
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+// src/helpers/tableStyle.ts
+var tableShapeStyle = ({
+  isShape,
+  isEmoji: isEmoji2,
+  isBlocked,
+  isSelected,
+  color,
+  selectedAppearance
+}) => {
+  const solid = isSelected && selectedAppearance === "solid";
+  const stroke = isShape ? "transparent" : isBlocked ? "transparent" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke;
+  const fill = isEmoji2 ? "transparent" : isBlocked ? DEFAULT_TABLE_PALETTE.blocked : isSelected ? solid ? SELECTED_TABLE_SOLID_FILL : DEFAULT_TABLE_PALETTE.selectedFill : isShape ? color || "transparent" : DEFAULT_TABLE_PALETTE.fill;
+  return {
+    fill,
+    stroke,
+    strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH
+  };
+};
+var MAX_TEXT = 14;
+var MIN_TWO_LINE = 9;
+var MIN_TEXT = 7;
+var CHAR_WIDTH = 0.6;
+var LINE_HEIGHT = 1.15;
+var tableInterior = (width, height, shape) => {
+  const ratio = shape === "circle" ? 0.7 : 0.8;
+  return { width: Math.abs(width) * ratio, height: Math.abs(height) * ratio };
+};
+var textWidth = (text, fontSize) => Array.from(text).length * CHAR_WIDTH * fontSize;
+var tableInsideText = (table, { width, height, shape, isSelected, selectedAppearance }) => {
+  const interior = tableInterior(width, height, shape);
+  const solid = isSelected && selectedAppearance === "solid";
+  const numberFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.dark100;
+  const coversFill = solid ? SELECTED_TABLE_SOLID_SUBTEXT : palette.dark50;
+  const number = table.number;
+  const covers = `${table.min_covers}\u2013${table.max_covers}`;
+  const base = Math.min(MAX_TEXT, Math.round(Math.min(width, height) * 0.28));
+  if (base >= MIN_TWO_LINE) {
+    const coversSize = Math.max(MIN_TEXT, Math.round(0.8 * base));
+    const fits = textWidth(number, base) <= interior.width && textWidth(covers, coversSize) <= interior.width && LINE_HEIGHT * (base + coversSize) <= interior.height;
+    if (fits) {
+      return {
+        mode: "inside",
+        lines: [
+          { text: number, fontSize: base, fill: numberFill },
+          { text: covers, fontSize: coversSize, fill: coversFill }
+        ]
+      };
+    }
+  }
+  for (let size = Math.min(base, MAX_TEXT); size >= MIN_TEXT; size -= 1) {
+    if (textWidth(number, size) <= interior.width && LINE_HEIGHT * size <= interior.height) {
+      return {
+        mode: "inside",
+        lines: [{ text: number, fontSize: size, fill: numberFill }]
+      };
+    }
+  }
+  return { mode: "badge" };
+};
+var showNumberBadge = ({
+  tableContent,
+  insideMode,
+  isPreferred,
+  isPaid
+}) => {
+  if (isPaid) return false;
+  if (tableContent === "badge") return isPreferred;
+  return insideMode === "badge";
+};
+
 // src/objects/TableGroup.ts
 var { fabric } = require("fabric");
 var TableGroup = class extends fabric.Group {
@@ -388,6 +616,15 @@ var FloorplanRenderer = class {
     this.paidTableIds = [];
     this.selectedTableIds = [];
     this.selectionMode = "multi";
+    this.tableContent = "badge";
+    this.selectedAppearance = "tint";
+    this.tableRings = {};
+    this.showRoomTabs = true;
+    this.dragToSelect = false;
+    this.onSelectionChange = null;
+    this.boxStart = null;
+    this.boxOverlay = null;
+    this.tableLabels = {};
     this.maxSelectable = null;
     this.covers = 0;
     this.tableGroups = [];
@@ -422,7 +659,7 @@ var FloorplanRenderer = class {
     this.suppressTap = false;
     this.pinchStartDistance = 0;
     this.pinchStartZoom = 1;
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -437,11 +674,18 @@ var FloorplanRenderer = class {
     this.preferredTableIds = options.preferredTableIds || [];
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || "multi";
-    this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
-    this.covers = (_b = options.covers) != null ? _b : 0;
+    this.tableContent = options.tableContent || "badge";
+    this.selectedAppearance = options.selectedAppearance || "tint";
+    this.tableRings = options.tableRings || {};
+    this.showRoomTabs = (_a = options.showRoomTabs) != null ? _a : true;
+    this.dragToSelect = (_b = options.dragToSelect) != null ? _b : false;
+    this.onSelectionChange = options.onSelectionChange || null;
+    this.tableLabels = options.tableLabels || {};
+    this.maxSelectable = (_c = options.maxSelectable) != null ? _c : null;
+    this.covers = (_d = options.covers) != null ? _d : 0;
     this.tableGroups = options.tableGroups || [];
-    this.showBackgroundImage = (_c = options.showBackgroundImage) != null ? _c : true;
-    this.showEmojis = (_d = options.showEmojis) != null ? _d : true;
+    this.showBackgroundImage = (_e = options.showBackgroundImage) != null ? _e : true;
+    this.showEmojis = (_f = options.showEmojis) != null ? _f : true;
     this.roomUnavailableHint = options.roomUnavailableHint || "";
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
@@ -711,6 +955,7 @@ var FloorplanRenderer = class {
     if (e.touches.length !== 2) return;
     this.isPinching = true;
     this.suppressTap = true;
+    this.cancelBoxSelection();
     this.isPanning = false;
     this.pinchStartDistance = this.touchSeparation(e.touches);
     this.pinchStartZoom = this.currentZoom();
@@ -768,11 +1013,27 @@ var FloorplanRenderer = class {
     return { x: e.clientX, y: e.clientY };
   }
   onPointerDown(opt) {
+    var _a;
     if (this.isPinching || this.isMultiTouch(opt.e)) return;
     this.suppressTap = false;
     this.lastPointer = this.pointerXY(opt.e);
     this.dragDistance = 0;
-    this.isPanning = this.currentZoom() > 1;
+    const e = opt.e;
+    const eventType = String(e.type || "");
+    const target = opt.target;
+    const kind = classifyPointerStart({
+      pointerType: e.pointerType || (eventType.startsWith("touch") ? "touch" : "mouse"),
+      eventType,
+      button: typeof e.button === "number" ? e.button : 0,
+      touchCount: e.touches ? e.touches.length : 0,
+      zoom: this.currentZoom(),
+      onTable: target instanceof TableGroup_default && ((_a = target.tableContext) == null ? void 0 : _a.type) === "Table",
+      dragToSelect: this.dragToSelect,
+      multi: this.selectionMode === "multi",
+      pinching: this.isPinching
+    });
+    this.isPanning = kind === "pan";
+    this.boxStart = kind === "box" && this.canvas ? this.canvas.getPointer(opt.e, true) : null;
   }
   onPointerMove(opt) {
     if (this.isPinching || this.isMultiTouch(opt.e)) return;
@@ -782,6 +1043,13 @@ var FloorplanRenderer = class {
     const dy = xy.y - this.lastPointer.y;
     this.dragDistance += Math.abs(dx) + Math.abs(dy);
     this.lastPointer = xy;
+    if (this.boxStart) {
+      opt.e.preventDefault();
+      if (this.dragDistance > DRAG_THRESHOLD && this.canvas) {
+        this.updateBoxOverlay(this.canvas.getPointer(opt.e, true));
+      }
+      return;
+    }
     if (this.isPanning) {
       opt.e.preventDefault();
       this.schedulePan(dx, dy);
@@ -793,15 +1061,97 @@ var FloorplanRenderer = class {
       this.lastPointer = null;
       this.isPanning = false;
       this.dragDistance = 0;
+      this.cancelBoxSelection();
       return;
     }
     const wasDrag = this.dragDistance > DRAG_THRESHOLD;
     this.lastPointer = null;
     this.isPanning = false;
     this.dragDistance = 0;
+    const boxStart = this.boxStart;
+    if (boxStart) {
+      this.cancelBoxSelection();
+      if (wasDrag && this.canvas) {
+        this.finishBoxSelection(boxStart, this.canvas.getPointer(opt.e, true));
+        return;
+      }
+    }
     if (!wasDrag) {
       this.handleTableSelect(opt);
     }
+  }
+  /**
+   * Add every bookable table inside the dragged box to the selection (within
+   * `maxSelectable`), re-render, and tell the host once.
+   */
+  finishBoxSelection(start, end) {
+    var _a;
+    const hits = tablesInRect(
+      ((_a = this.selectedRoom) == null ? void 0 : _a.tables) || [],
+      {
+        left: start.x,
+        top: start.y,
+        width: end.x - start.x,
+        height: end.y - start.y
+      },
+      this.canvasSize,
+      { blockedIds: this.blockedTableIds, emojiList: floorEmojiList }
+    );
+    this.selectedTableIds = mergeSelection(
+      this.selectedTableIds,
+      hits,
+      this.maxSelectable
+    );
+    this.render();
+    if (this.onSelectionChange) {
+      this.onSelectionChange([...this.selectedTableIds]);
+    }
+  }
+  /**
+   * Draw (or move) the selection box overlay between the press and `end`
+   */
+  updateBoxOverlay(end) {
+    var _a;
+    const mount = this.overlayMount();
+    const upper = (_a = this.canvas) == null ? void 0 : _a.upperCanvasEl;
+    if (!mount || !upper || !this.boxStart) return;
+    if (!this.boxOverlay) {
+      this.boxOverlay = document.createElement("div");
+      this.boxOverlay.className = "floorplan-box-select";
+      mount.appendChild(this.boxOverlay);
+    }
+    const mountRect = mount.getBoundingClientRect();
+    const canvasRect = upper.getBoundingClientRect();
+    const css = toCssRect(
+      {
+        left: this.boxStart.x,
+        top: this.boxStart.y,
+        width: end.x - this.boxStart.x,
+        height: end.y - this.boxStart.y
+      },
+      {
+        canvasWidth: this.canvasSize,
+        canvasHeight: this.canvasSize,
+        cssWidth: canvasRect.width,
+        cssHeight: canvasRect.height,
+        offsetLeft: canvasRect.left - mountRect.left,
+        offsetTop: canvasRect.top - mountRect.top
+      }
+    );
+    this.boxOverlay.style.left = `${css.left}px`;
+    this.boxOverlay.style.top = `${css.top}px`;
+    this.boxOverlay.style.width = `${css.width}px`;
+    this.boxOverlay.style.height = `${css.height}px`;
+  }
+  /**
+   * Drop any in-progress box selection and its overlay
+   */
+  cancelBoxSelection() {
+    this.boxStart = null;
+    if (this.boxOverlay && this.boxOverlay.parentNode) {
+      this.boxOverlay.parentNode.removeChild(this.boxOverlay);
+    }
+    this.boxOverlay = null;
   }
   /**
    * Toggle the pressed table's selection and notify the host
@@ -1035,6 +1385,7 @@ var FloorplanRenderer = class {
    * Render room tabs
    */
   renderTabs() {
+    if (!this.showRoomTabs) return;
     if (!this.tabsContainerElement && this.containerElement) {
       this.tabsContainerElement = document.createElement("div");
       this.tabsContainerElement.className = "floorplan-tabs-container";
@@ -1154,6 +1505,163 @@ var FloorplanRenderer = class {
     });
   }
   /**
+   * Opt-in ring around a table, drawn as its own non-interactive object behind
+   * every table so it never enlarges the table's click target.
+   */
+  createRing(table, color) {
+    const { top, left, width, height } = getDimensionsV2(
+      table,
+      this.canvasSize
+    );
+    const geometry = ringGeometry({ shape: table.shape, width, height });
+    const half = RING_STROKE / 2;
+    const shapeFor = (grow, options) => geometry.kind === "ellipse" ? new import_fabric.fabric.Ellipse({
+      ...CENTER_ORIGIN,
+      ...options,
+      rx: geometry.rx + grow,
+      ry: geometry.ry + grow
+    }) : new import_fabric.fabric.Rect({
+      ...CENTER_ORIGIN,
+      ...options,
+      width: geometry.width + grow * 2,
+      height: geometry.height + grow * 2,
+      rx: geometry.rx + grow,
+      ry: geometry.rx + grow
+    });
+    const glowShape = () => shapeFor(-half, {
+      fill: color,
+      strokeWidth: 0,
+      shadow: new import_fabric.fabric.Shadow({
+        color: ringGlow(color, 0.9),
+        blur: 24,
+        offsetX: 0,
+        offsetY: 0
+      })
+    });
+    const band = shapeFor(0, {
+      fill: "transparent",
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.55
+    });
+    const ring = new import_fabric.fabric.Group([glowShape(), glowShape(), band], {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      top,
+      left,
+      angle: table.rotation || 0,
+      perPixelTargetFind: false,
+      // Cached groups clip their shadow to the cache bounds (a visible box)
+      objectCaching: false
+    });
+    ring._ring = true;
+    return ring;
+  }
+  /**
+   * Opt-in stack of label pills under a table (e.g. seating areas). Unrotated,
+   * non-interactive, top-anchored so it grows downwards from the table.
+   */
+  createTableLabels(table) {
+    const texts = formatTableLabels(this.tableLabels[table.id] || []);
+    if (texts.length === 0) return null;
+    const pillHeight = 16;
+    const gap = 2;
+    const objects = [];
+    texts.forEach((label, index) => {
+      const centreY = index * (pillHeight + gap) + pillHeight / 2;
+      const text = new import_fabric.fabric.Text(label, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        fontFamily: "Inter, sans-serif",
+        fill: "#555555",
+        fontSize: 10,
+        fontWeight: "600",
+        lineHeight: 1,
+        textAlign: "center"
+      });
+      const pill = new import_fabric.fabric.Rect({
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        width: (text.width || 0) + 14,
+        height: pillHeight,
+        rx: pillHeight / 2,
+        ry: pillHeight / 2,
+        fill: palette.white,
+        stroke: "#D9D9D9",
+        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH
+      });
+      objects.push(pill, text);
+    });
+    return new LabelGroup_default(objects, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      originX: "center",
+      originY: "top",
+      _relatedTableId: table.id,
+      _positionOnTable: "below"
+    });
+  }
+  /**
+   * Text objects for the number (and covers) inside a table, centred and sized by
+   * `tableInsideText`. Returns null when the text cannot fit — either by the size
+   * estimate or by Fabric's real text metrics — so the caller falls back to the
+   * number badge and nothing ever extends past the table's own pixels.
+   */
+  createInsideText(table, {
+    width,
+    height,
+    isSelected
+  }) {
+    const plan = tableInsideText(table, {
+      width,
+      height,
+      shape: table.shape,
+      isSelected,
+      selectedAppearance: this.selectedAppearance
+    });
+    if (plan.mode !== "inside") return null;
+    const interior = tableInterior(width, height, table.shape);
+    const build = (sizes2) => {
+      const lineHeights = sizes2.map((size) => size * 1.15);
+      const total2 = lineHeights.reduce((sum, h) => sum + h, 0);
+      let cursor = -total2 / 2;
+      const texts2 = plan.lines.map((line, index) => {
+        const top = cursor + lineHeights[index] / 2;
+        cursor += lineHeights[index];
+        return new import_fabric.fabric.Text(line.text, {
+          ...DISABLED_OBJECT_PROPERTIES,
+          ...CENTER_ORIGIN,
+          top,
+          left: 0,
+          fontFamily: "Inter, sans-serif",
+          fontSize: sizes2[index],
+          fontWeight: index === 0 ? "700" : "normal",
+          fill: line.fill,
+          lineHeight: 1,
+          textAlign: "center"
+        });
+      });
+      return { texts: texts2, total: total2 };
+    };
+    let sizes = plan.lines.map((line) => line.fontSize);
+    let { texts, total } = build(sizes);
+    const widest = Math.max(...texts.map((text) => text.width || 0));
+    const scale = Math.min(1, interior.width / widest, interior.height / total);
+    if (scale < 1) {
+      sizes = sizes.map((size) => Math.floor(size * scale));
+      if (sizes[0] < 7) return null;
+      ({ texts } = build(sizes));
+    }
+    const overflows = texts.some(
+      (text) => (text.width || 0) > interior.width || (text.height || 0) > interior.height
+    );
+    return overflows ? null : texts;
+  }
+  /**
    * Create a table object for rendering on canvas
    */
   createTableObject(table) {
@@ -1171,14 +1679,22 @@ var FloorplanRenderer = class {
       const isSelected = this.selectedTableIds.includes(table.id);
       const isPreferred = this.preferredTableIds.includes(table.id);
       const isPaid = this.paidTableIds.includes(table.id);
+      const style = tableShapeStyle({
+        isShape,
+        isEmoji: isEmojiType,
+        isBlocked,
+        isSelected,
+        color,
+        selectedAppearance: this.selectedAppearance
+      });
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: style.strokeWidth,
         rx: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(width) / 2,
         ry: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(height) / 2,
         strokeUniform: true,
-        stroke: isShape ? "transparent" : isBlocked ? "transparent" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke,
-        fill: isEmojiType ? "transparent" : isBlocked ? DEFAULT_TABLE_PALETTE.blocked : isSelected ? DEFAULT_TABLE_PALETTE.selectedFill : isShape ? color || "transparent" : DEFAULT_TABLE_PALETTE.fill,
+        stroke: style.stroke,
+        fill: style.fill,
         perPixelTargetFind: true
       };
       let tableObject;
@@ -1204,6 +1720,18 @@ var FloorplanRenderer = class {
       if (isShape && !isEmojiType && table.number) {
         groupObjects.push(this.createShapeLabel(table));
       }
+      let insideMode = "badge";
+      if (this.tableContent === "inside" && isTable && !isEmojiType) {
+        const insideObjects = this.createInsideText(table, {
+          width,
+          height,
+          isSelected
+        });
+        if (insideObjects) {
+          insideMode = "inside";
+          groupObjects.push(...insideObjects);
+        }
+      }
       const tableGroup = new TableGroup_default(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
@@ -1218,7 +1746,12 @@ var FloorplanRenderer = class {
       if (!isEmojiType && !isBlocked && isTable) {
         if (isPaid) {
           labelGroup = this.createPaymentLabel(table);
-        } else if (isPreferred) {
+        } else if (showNumberBadge({
+          tableContent: this.tableContent,
+          insideMode,
+          isPreferred,
+          isPaid
+        })) {
           labelGroup = this.createTableNumberLabel(table, isSelected);
         }
       }
@@ -1236,9 +1769,20 @@ var FloorplanRenderer = class {
   /**
    * Position the label relative to its table group
    */
-  positionLabel(tableGroup, labelGroup) {
+  positionLabel(tableGroup, labelGroup, badgeGroup = null) {
     const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === "Shape";
+    if (labelGroup._positionOnTable === "below") {
+      const badgeRect = badgeGroup ? badgeGroup.getBoundingRect(true, true) : null;
+      labelGroup.set({
+        top: belowLabelTop({
+          tableBottom: boundingRect.top + boundingRect.height,
+          badgeBottom: badgeRect ? badgeRect.top + badgeRect.height : void 0
+        }),
+        left: boundingRect.left + boundingRect.width / 2
+      });
+      return;
+    }
     if (labelGroup._positionOnTable === "corner") {
       labelGroup.set({
         top: boundingRect.top + boundingRect.height,
@@ -1300,13 +1844,41 @@ var FloorplanRenderer = class {
         floorEmojiList,
         this.selectedTableIds
       );
-      sortedTables.forEach((table) => {
+      const { decor, tables } = renderLayers(sortedTables);
+      const addWithBadge = (table) => {
         const { tableGroup, labelGroup } = this.createTableObject(table);
         this.canvas.add(tableGroup);
         if (labelGroup) {
           this.positionLabel(tableGroup, labelGroup);
           this.canvas.add(labelGroup);
         }
+        return { tableGroup, labelGroup };
+      };
+      decor.forEach(addWithBadge);
+      tables.forEach((table) => {
+        const color = ringColorFor(
+          table,
+          this.tableRings,
+          this.blockedTableIds.includes(table.id)
+        );
+        if (color) this.canvas.add(this.createRing(table, color));
+      });
+      const belowLabels = [];
+      tables.forEach((table) => {
+        const { tableGroup, labelGroup } = addWithBadge(table);
+        const labels = this.createTableLabels(table);
+        if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
+      });
+      const boxes = belowLabels.map(([tableGroup, labels, badge]) => {
+        this.positionLabel(tableGroup, labels, badge);
+        labels.setCoords();
+        return labels.getBoundingRect(true, true);
+      });
+      const tops = separateLabelStacks(boxes);
+      belowLabels.forEach(([, labels], index) => {
+        const shift = tops[index] - boxes[index].top;
+        if (shift) labels.set({ top: (labels.top || 0) + shift }).setCoords();
+        this.canvas.add(labels);
       });
       this.canvas.renderAll();
     } catch (error) {
@@ -1336,9 +1908,47 @@ var FloorplanRenderer = class {
     this.captureMinimap();
   }
   /**
+   * The current selection (a copy).
+   */
+  getSelectedTableIds() {
+    return [...this.selectedTableIds];
+  }
+  /**
+   * Replace the selection without re-creating the renderer (keeps zoom and pan).
+   * Blocked ids are dropped and `maxSelectable` applies; no callbacks fire.
+   */
+  setSelectedTableIds(ids) {
+    if (!this.canvas) return;
+    let next = Array.from(new Set(ids)).filter(
+      (id) => !this.blockedTableIds.includes(id)
+    );
+    if (this.maxSelectable !== null) next = next.slice(0, this.maxSelectable);
+    if (sameIds(next, this.selectedTableIds)) return;
+    this.selectedTableIds = next;
+    this.render();
+  }
+  /**
+   * Replace the table rings (pass {} to remove them). Keeps zoom and pan; the
+   * minimap keeps its last capture, as it does for selection changes.
+   */
+  setTableRings(rings) {
+    if (!this.canvas || sameRecord(rings, this.tableRings)) return;
+    this.tableRings = { ...rings };
+    this.render();
+  }
+  /**
+   * Replace the below-table labels (pass {} to remove them). Keeps zoom and pan.
+   */
+  setTableLabels(labels) {
+    if (!this.canvas || sameRecord(labels, this.tableLabels)) return;
+    this.tableLabels = { ...labels };
+    this.render();
+  }
+  /**
    * Destroy the renderer and clean up resources
    */
   destroy() {
+    this.cancelBoxSelection();
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
