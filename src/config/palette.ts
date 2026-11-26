@@ -63,3 +63,9 @@ export const shapeColors = [
   '#D1ADC1',
   '#AFC1EC',
 ] as const;
+
+/**
+ * Opt-in solid selection (`selectedAppearance: 'solid'`)
+ */
+export const SELECTED_TABLE_SOLID_FILL = '#128849';
+export const SELECTED_TABLE_SOLID_TEXT = '#FFFFFF';

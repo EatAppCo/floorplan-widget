@@ -26,7 +26,10 @@ const ALL_STATES = [
   'showEmojis-false',
   'pinch',
 ];
-const states = only ? only.split(',') : ALL_STATES;
+// Candidate-only checks of opt-in features, run by `npm run golden:features`.
+const FEATURE_STATES = ['inside-text', 'solid-selected'];
+const states =
+  only === 'features' ? FEATURE_STATES : only ? only.split(',') : ALL_STATES;
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -134,7 +137,51 @@ const interactions = {
   },
   'showEmojis-false': async () => {},
   pinch: async (page) => pinch(page, 'sq'),
+  'inside-text': async () => {},
+  'solid-selected': async (page) => {
+    const p = await tablePoint(page, 'T1');
+    await page.mouse.click(p.x, p.y);
+  },
 };
+
+// Inspect the real Fabric objects for the feature room's tables.
+async function tableObjects(page) {
+  return page.evaluate(() => {
+    const r = window.__golden.renderer;
+    const objects = r.canvas.getObjects();
+    const byId = {};
+    objects.forEach((o, index) => {
+      if (o.tableContext) {
+        const children = o._objects || [];
+        const shape = children[0];
+        const interior = {
+          width:
+            Math.abs(shape.width) *
+            (o.tableContext.shape === 'circle' ? 0.7 : 0.8),
+          height:
+            Math.abs(shape.height) *
+            (o.tableContext.shape === 'circle' ? 0.7 : 0.8),
+        };
+        byId[o.tableContext.id] = {
+          index,
+          fill: shape.fill,
+          texts: children
+            .filter((c) => c.type === 'text')
+            .map((c) => ({
+              text: c.text,
+              fill: c.fill,
+              width: c.width,
+              height: c.height,
+            })),
+          interior,
+        };
+      } else if (o._relatedTableId) {
+        (byId[o._relatedTableId] ||= {}).badge = o._positionOnTable;
+      }
+    });
+    return byId;
+  });
+}
 
 const expectations = {
   fit: (s) => {
@@ -169,6 +216,45 @@ const expectations = {
   pinch: (s) => {
     check(s.zoom > 1, `pinch zoom ${s.zoom}`);
     check(s.selected.length === 0, `pinch selected ${s.selected}`);
+  },
+  'inside-text': (s) => {
+    const t = s.objects;
+    check(
+      t.T1.texts.map((x) => x.text).join() === 'T1,1–4',
+      `T1 texts ${JSON.stringify(t.T1.texts)}`
+    );
+    check(
+      t.C1.texts.map((x) => x.text).join() === 'C1',
+      `C1 texts ${JSON.stringify(t.C1.texts)}`
+    );
+    check(
+      t.X.texts.length === 0 && t.X.badge === 'bottom',
+      `X should fall back to the badge: ${JSON.stringify(t.X)}`
+    );
+    check(
+      t['TERRACE-12'].texts.length === 0 && t['TERRACE-12'].badge === 'bottom',
+      `wide id should fall back: ${JSON.stringify(t['TERRACE-12'])}`
+    );
+    for (const [id, o] of Object.entries(t)) {
+      (o.texts || []).forEach((x) =>
+        check(
+          x.width <= o.interior.width && x.height <= o.interior.height,
+          `${id} text overflows: ${JSON.stringify(x)} vs ${JSON.stringify(o.interior)}`
+        )
+      );
+    }
+  },
+  'solid-selected': (s) => {
+    check(s.selected.join() === 'T1', `selected ${s.selected}`);
+    check(s.objects.T1.fill === '#128849', `T1 fill ${s.objects.T1.fill}`);
+    check(
+      s.objects.T1.texts.every((x) => x.fill === '#FFFFFF'),
+      `T1 text fills ${JSON.stringify(s.objects.T1.texts)}`
+    );
+    check(
+      s.objects.C1.fill === '#FFFFFF',
+      `C1 should stay unselected: ${s.objects.C1.fill}`
+    );
   },
 };
 
@@ -218,6 +304,8 @@ try {
       );
 
       const after = await snapshot(page);
+      if (FEATURE_STATES.includes(state))
+        after.objects = await tableObjects(page);
       check(after.errors.length === 0, `errors after input: ${after.errors}`);
       check(pageErrors.length === 0, `page errors: ${pageErrors}`);
       expectations[state](after, before);

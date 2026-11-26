@@ -161,6 +161,8 @@ var shapeColors = [
   "#D1ADC1",
   "#AFC1EC"
 ];
+var SELECTED_TABLE_SOLID_FILL = "#128849";
+var SELECTED_TABLE_SOLID_TEXT = "#FFFFFF";
 
 // src/config/emojis.ts
 var floorEmojiList = [
@@ -352,6 +354,76 @@ var sortTablesByRenderOrder = (tables, emojiList, selectedTableIds = []) => {
   });
 };
 
+// src/helpers/tableStyle.ts
+var tableShapeStyle = ({
+  isShape,
+  isEmoji: isEmoji2,
+  isBlocked,
+  isSelected,
+  color,
+  selectedAppearance
+}) => {
+  const solid = isSelected && selectedAppearance === "solid";
+  const stroke = isShape ? "transparent" : isBlocked ? "transparent" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke;
+  const fill = isEmoji2 ? "transparent" : isBlocked ? DEFAULT_TABLE_PALETTE.blocked : isSelected ? solid ? SELECTED_TABLE_SOLID_FILL : DEFAULT_TABLE_PALETTE.selectedFill : isShape ? color || "transparent" : DEFAULT_TABLE_PALETTE.fill;
+  return {
+    fill,
+    stroke,
+    strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH
+  };
+};
+var MAX_TEXT = 13;
+var MIN_TWO_LINE = 9;
+var MIN_TEXT = 7;
+var CHAR_WIDTH = 0.6;
+var LINE_HEIGHT = 1.15;
+var tableInterior = (width, height, shape) => {
+  const ratio = shape === "circle" ? 0.7 : 0.8;
+  return { width: Math.abs(width) * ratio, height: Math.abs(height) * ratio };
+};
+var textWidth = (text, fontSize) => Array.from(text).length * CHAR_WIDTH * fontSize;
+var tableInsideText = (table, { width, height, shape, isSelected, selectedAppearance }) => {
+  const interior = tableInterior(width, height, shape);
+  const solid = isSelected && selectedAppearance === "solid";
+  const numberFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.dark100;
+  const coversFill = solid ? SELECTED_TABLE_SOLID_TEXT : palette.gray200;
+  const number = table.number;
+  const covers = `${table.min_covers}\u2013${table.max_covers}`;
+  const base = Math.min(MAX_TEXT, Math.round(Math.min(width, height) * 0.28));
+  if (base >= MIN_TWO_LINE) {
+    const coversSize = Math.max(MIN_TEXT, Math.round(0.8 * base));
+    const fits = textWidth(number, base) <= interior.width && textWidth(covers, coversSize) <= interior.width && LINE_HEIGHT * (base + coversSize) <= interior.height;
+    if (fits) {
+      return {
+        mode: "inside",
+        lines: [
+          { text: number, fontSize: base, fill: numberFill },
+          { text: covers, fontSize: coversSize, fill: coversFill }
+        ]
+      };
+    }
+  }
+  for (let size = Math.min(base, MAX_TEXT); size >= MIN_TEXT; size -= 1) {
+    if (textWidth(number, size) <= interior.width && LINE_HEIGHT * size <= interior.height) {
+      return {
+        mode: "inside",
+        lines: [{ text: number, fontSize: size, fill: numberFill }]
+      };
+    }
+  }
+  return { mode: "badge" };
+};
+var showNumberBadge = ({
+  tableContent,
+  insideMode,
+  isPreferred,
+  isPaid
+}) => {
+  if (isPaid) return false;
+  if (tableContent === "badge") return isPreferred;
+  return insideMode === "badge";
+};
+
 // src/objects/TableGroup.ts
 var { fabric } = require("fabric");
 var TableGroup = class extends fabric.Group {
@@ -388,6 +460,8 @@ var FloorplanRenderer = class {
     this.paidTableIds = [];
     this.selectedTableIds = [];
     this.selectionMode = "multi";
+    this.tableContent = "badge";
+    this.selectedAppearance = "tint";
     this.maxSelectable = null;
     this.covers = 0;
     this.tableGroups = [];
@@ -437,6 +511,8 @@ var FloorplanRenderer = class {
     this.preferredTableIds = options.preferredTableIds || [];
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || "multi";
+    this.tableContent = options.tableContent || "badge";
+    this.selectedAppearance = options.selectedAppearance || "tint";
     this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
     this.covers = (_b = options.covers) != null ? _b : 0;
     this.tableGroups = options.tableGroups || [];
@@ -1154,6 +1230,50 @@ var FloorplanRenderer = class {
     });
   }
   /**
+   * Text objects for the number (and covers) inside a table, centred and sized by
+   * `tableInsideText`. Returns null when the text cannot fit — either by the size
+   * estimate or by Fabric's real text metrics — so the caller falls back to the
+   * number badge and nothing ever extends past the table's own pixels.
+   */
+  createInsideText(table, {
+    width,
+    height,
+    isSelected
+  }) {
+    const plan = tableInsideText(table, {
+      width,
+      height,
+      shape: table.shape,
+      isSelected,
+      selectedAppearance: this.selectedAppearance
+    });
+    if (plan.mode !== "inside") return null;
+    const interior = tableInterior(width, height, table.shape);
+    const lineHeights = plan.lines.map((line) => line.fontSize * 1.15);
+    const total = lineHeights.reduce((sum, h) => sum + h, 0);
+    let cursor = -total / 2;
+    const texts = plan.lines.map((line, index) => {
+      const top = cursor + lineHeights[index] / 2;
+      cursor += lineHeights[index];
+      return new import_fabric.fabric.Text(line.text, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top,
+        left: 0,
+        fontFamily: "Inter, sans-serif",
+        fontSize: line.fontSize,
+        fontWeight: index === 0 ? "600" : "normal",
+        fill: line.fill,
+        lineHeight: 1,
+        textAlign: "center"
+      });
+    });
+    const overflows = texts.some(
+      (text) => (text.width || 0) > interior.width || (text.height || 0) > interior.height
+    );
+    return overflows ? null : texts;
+  }
+  /**
    * Create a table object for rendering on canvas
    */
   createTableObject(table) {
@@ -1171,14 +1291,22 @@ var FloorplanRenderer = class {
       const isSelected = this.selectedTableIds.includes(table.id);
       const isPreferred = this.preferredTableIds.includes(table.id);
       const isPaid = this.paidTableIds.includes(table.id);
+      const style = tableShapeStyle({
+        isShape,
+        isEmoji: isEmojiType,
+        isBlocked,
+        isSelected,
+        color,
+        selectedAppearance: this.selectedAppearance
+      });
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: isSelected ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH : FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: style.strokeWidth,
         rx: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(width) / 2,
         ry: isEmojiType ? 0 : isRectangleShape ? FLOOR_DEFAULT.TABLE_RADIUS : Math.abs(height) / 2,
         strokeUniform: true,
-        stroke: isShape ? "transparent" : isBlocked ? "transparent" : isSelected ? DEFAULT_TABLE_PALETTE.selectedStroke : DEFAULT_TABLE_PALETTE.stroke,
-        fill: isEmojiType ? "transparent" : isBlocked ? DEFAULT_TABLE_PALETTE.blocked : isSelected ? DEFAULT_TABLE_PALETTE.selectedFill : isShape ? color || "transparent" : DEFAULT_TABLE_PALETTE.fill,
+        stroke: style.stroke,
+        fill: style.fill,
         perPixelTargetFind: true
       };
       let tableObject;
@@ -1204,6 +1332,18 @@ var FloorplanRenderer = class {
       if (isShape && !isEmojiType && table.number) {
         groupObjects.push(this.createShapeLabel(table));
       }
+      let insideMode = "badge";
+      if (this.tableContent === "inside" && isTable && !isEmojiType) {
+        const insideObjects = this.createInsideText(table, {
+          width,
+          height,
+          isSelected
+        });
+        if (insideObjects) {
+          insideMode = "inside";
+          groupObjects.push(...insideObjects);
+        }
+      }
       const tableGroup = new TableGroup_default(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
@@ -1218,7 +1358,12 @@ var FloorplanRenderer = class {
       if (!isEmojiType && !isBlocked && isTable) {
         if (isPaid) {
           labelGroup = this.createPaymentLabel(table);
-        } else if (isPreferred) {
+        } else if (showNumberBadge({
+          tableContent: this.tableContent,
+          insideMode,
+          isPreferred,
+          isPaid
+        })) {
           labelGroup = this.createTableNumberLabel(table, isSelected);
         }
       }

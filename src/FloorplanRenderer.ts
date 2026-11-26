@@ -18,6 +18,14 @@ import {
   isEmoji,
   sortTablesByRenderOrder,
 } from './helpers/tables';
+import {
+  SelectedAppearance,
+  showNumberBadge,
+  TableContent,
+  tableInsideText,
+  tableInterior,
+  tableShapeStyle,
+} from './helpers/tableStyle';
 import TableGroup from './objects/TableGroup';
 import LabelGroup from './objects/LabelGroup';
 import './FloorplanRenderer.css';
@@ -44,6 +52,8 @@ export class FloorplanRenderer {
   private paidTableIds: string[] = [];
   private selectedTableIds: string[] = [];
   private selectionMode: 'single' | 'multi' = 'multi';
+  private tableContent: TableContent = 'badge';
+  private selectedAppearance: SelectedAppearance = 'tint';
   private maxSelectable: number | null = null;
   private covers: number = 0;
   private tableGroups: string[][] = [];
@@ -99,6 +109,8 @@ export class FloorplanRenderer {
     this.preferredTableIds = options.preferredTableIds || [];
     this.paidTableIds = options.paidTableIds || [];
     this.selectionMode = options.selectionMode || 'multi';
+    this.tableContent = options.tableContent || 'badge';
+    this.selectedAppearance = options.selectedAppearance || 'tint';
     this.maxSelectable = options.maxSelectable ?? null;
     this.covers = options.covers ?? 0;
     this.tableGroups = options.tableGroups || [];
@@ -987,6 +999,59 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Text objects for the number (and covers) inside a table, centred and sized by
+   * `tableInsideText`. Returns null when the text cannot fit — either by the size
+   * estimate or by Fabric's real text metrics — so the caller falls back to the
+   * number badge and nothing ever extends past the table's own pixels.
+   */
+  private createInsideText(
+    table: Table,
+    {
+      width,
+      height,
+      isSelected,
+    }: { width: number; height: number; isSelected: boolean }
+  ): fabric.Object[] | null {
+    const plan = tableInsideText(table, {
+      width,
+      height,
+      shape: table.shape,
+      isSelected,
+      selectedAppearance: this.selectedAppearance,
+    });
+    if (plan.mode !== 'inside') return null;
+
+    const interior = tableInterior(width, height, table.shape);
+    const lineHeights = plan.lines.map((line) => line.fontSize * 1.15);
+    const total = lineHeights.reduce((sum, h) => sum + h, 0);
+    let cursor = -total / 2;
+
+    const texts = plan.lines.map((line, index) => {
+      const top = cursor + lineHeights[index] / 2;
+      cursor += lineHeights[index];
+      return new fabric.Text(line.text, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top,
+        left: 0,
+        fontFamily: 'Inter, sans-serif',
+        fontSize: line.fontSize,
+        fontWeight: index === 0 ? '600' : 'normal',
+        fill: line.fill,
+        lineHeight: 1,
+        textAlign: 'center',
+      });
+    });
+
+    const overflows = texts.some(
+      (text) =>
+        (text.width || 0) > interior.width ||
+        (text.height || 0) > interior.height
+    );
+    return overflows ? null : texts;
+  }
+
+  /**
    * Create a table object for rendering on canvas
    */
   private createTableObject(table: Table): {
@@ -1010,11 +1075,17 @@ export class FloorplanRenderer {
       const isPaid = this.paidTableIds.includes(table.id);
 
       // Table object options
+      const style = tableShapeStyle({
+        isShape,
+        isEmoji: isEmojiType,
+        isBlocked,
+        isSelected,
+        color,
+        selectedAppearance: this.selectedAppearance,
+      });
       const tableObjectOptions = {
         ...CENTER_ORIGIN,
-        strokeWidth: isSelected
-          ? FLOOR_DEFAULT.STROKE_SELECTED_WIDTH
-          : FLOOR_DEFAULT.STROKE_WIDTH,
+        strokeWidth: style.strokeWidth,
         rx: isEmojiType
           ? 0
           : isRectangleShape
@@ -1026,22 +1097,8 @@ export class FloorplanRenderer {
             ? FLOOR_DEFAULT.TABLE_RADIUS
             : Math.abs(height) / 2,
         strokeUniform: true,
-        stroke: isShape
-          ? 'transparent'
-          : isBlocked
-            ? 'transparent'
-            : isSelected
-              ? DEFAULT_TABLE_PALETTE.selectedStroke
-              : DEFAULT_TABLE_PALETTE.stroke,
-        fill: isEmojiType
-          ? 'transparent'
-          : isBlocked
-            ? DEFAULT_TABLE_PALETTE.blocked
-            : isSelected
-              ? DEFAULT_TABLE_PALETTE.selectedFill
-              : isShape
-                ? color || 'transparent'
-                : DEFAULT_TABLE_PALETTE.fill,
+        stroke: style.stroke,
+        fill: style.fill,
         perPixelTargetFind: true,
       };
 
@@ -1072,6 +1129,20 @@ export class FloorplanRenderer {
         groupObjects.push(this.createShapeLabel(table));
       }
 
+      // Opt-in: number + covers inside the table, rotating with it
+      let insideMode: 'inside' | 'badge' = 'badge';
+      if (this.tableContent === 'inside' && isTable && !isEmojiType) {
+        const insideObjects = this.createInsideText(table, {
+          width,
+          height,
+          isSelected,
+        });
+        if (insideObjects) {
+          insideMode = 'inside';
+          groupObjects.push(...insideObjects);
+        }
+      }
+
       const tableGroup = new TableGroup(groupObjects, {
         ...DEFAULT_TABLE_GROUP_OPTIONS,
         tableContext: table,
@@ -1083,12 +1154,19 @@ export class FloorplanRenderer {
         hoverCursor: isTable && !isBlocked ? 'pointer' : 'default',
       });
 
-      // The bottom slot holds one badge: `$` takes precedence, else the preferred number
+      // The bottom slot holds one badge: `$` takes precedence, else the number badge
       let labelGroup: LabelGroup | null = null;
       if (!isEmojiType && !isBlocked && isTable) {
         if (isPaid) {
           labelGroup = this.createPaymentLabel(table);
-        } else if (isPreferred) {
+        } else if (
+          showNumberBadge({
+            tableContent: this.tableContent,
+            insideMode,
+            isPreferred,
+            isPaid,
+          })
+        ) {
           labelGroup = this.createTableNumberLabel(table, isSelected);
         }
       }

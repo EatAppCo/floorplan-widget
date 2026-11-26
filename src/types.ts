@@ -91,6 +91,14 @@ export interface FloorplanRendererOptions {
    */
   roomUnavailableHint?: string;
   selectionMode?: 'single' | 'multi';
+  /**
+   * What a table shows: `'badge'` (default) is the number badge under preferred tables;
+   * `'inside'` draws the number and covers inside every table, falling back to the badge
+   * when the table is too small for the text.
+   */
+  tableContent?: 'badge' | 'inside';
+  /** Selected tables: `'tint'` (default, light green) or `'solid'` (green with white text) */
+  selectedAppearance?: 'tint' | 'solid';
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
   onRoomChange?: OnRoomChangeCallback;

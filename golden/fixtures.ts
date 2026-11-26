@@ -43,6 +43,20 @@ export const mainTables = [
   t('🌳', 0.9, 0.88, { type: 'Shape', size: '4x4', shape: 'square' }),
 ];
 
+// Candidate-only feature room (tables sized for the inside-text rules).
+export const featureTables = [
+  t('T1', 0.25, 0.25, { size: '4.3x4.3', room_id: 'features' }),
+  t('C1', 0.5, 0.25, { shape: 'circle', size: '2.6x2.6', room_id: 'features' }),
+  t('X', 0.75, 0.25, { size: '1x1', room_id: 'features' }),
+  t('TERRACE-12', 0.25, 0.6, { size: '4.3x4.3', room_id: 'features' }),
+  t('R2', 0.6, 0.6, {
+    shape: 'rectangle',
+    size: '6x3',
+    rotation: 30,
+    room_id: 'features',
+  }),
+];
+
 export const rooms = [
   {
     id: 'main',
@@ -59,6 +73,14 @@ export const rooms = [
     background_image_sid: null,
     table_ids: ['shut'],
     tables: [t('shut', 0.5, 0.5, { room_id: 'closed' })],
+  },
+  {
+    id: 'features',
+    name: 'Features',
+    background_image_url: null,
+    background_image_sid: null,
+    table_ids: featureTables.map((x) => x.id),
+    tables: featureTables,
   },
 ];
 
@@ -79,6 +101,14 @@ export const stateOptions: Record<string, Record<string, unknown>> = {
   'zoomed-pan': {},
   'showEmojis-false': { showEmojis: false },
   pinch: {},
+  'inside-text': { tableContent: 'inside', initialRoomId: 'features' },
+  'solid-selected': {
+    tableContent: 'inside',
+    selectedAppearance: 'solid',
+    initialRoomId: 'features',
+  },
 };
 
-export const tableById = Object.fromEntries(mainTables.map((x) => [x.id, x]));
+export const tableById = Object.fromEntries(
+  [...mainTables, ...featureTables].map((x) => [x.id, x])
+);

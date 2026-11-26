@@ -14,7 +14,8 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
     "clean": "rm -rf dist",
-    "golden:check": "bash golden/check.sh"
+    "golden:check": "bash golden/check.sh",
+    "golden:features": "bash golden/features.sh"
   },
   "author": "EAT App",
   "license": "MIT",
