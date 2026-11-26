@@ -22,6 +22,8 @@ import {
 import {
   classifyPointerStart,
   mergeSelection,
+  sameIds,
+  sameRecord,
   tablesInRect,
   toCssRect,
 } from './helpers/selection';
@@ -1637,6 +1639,49 @@ export class FloorplanRenderer {
 
     // Re-snapshot for the minimap (canvas is at identity zoom here)
     this.captureMinimap();
+  }
+
+  /**
+   * The current selection (a copy).
+   */
+  public getSelectedTableIds(): string[] {
+    return [...this.selectedTableIds];
+  }
+
+  /**
+   * Replace the selection without re-creating the renderer (keeps zoom and pan).
+   * Blocked ids are dropped and `maxSelectable` applies; no callbacks fire.
+   */
+  public setSelectedTableIds(ids: string[]): void {
+    if (!this.canvas) return;
+
+    let next = ids.filter((id) => !this.blockedTableIds.includes(id));
+    if (this.maxSelectable !== null) next = next.slice(0, this.maxSelectable);
+    if (sameIds(next, this.selectedTableIds)) return;
+
+    this.selectedTableIds = next;
+    this.render();
+  }
+
+  /**
+   * Replace the table rings (pass {} to remove them). Keeps zoom and pan; the
+   * minimap keeps its last capture, as it does for selection changes.
+   */
+  public setTableRings(rings: Record<string, string>): void {
+    if (!this.canvas || sameRecord(rings, this.tableRings)) return;
+
+    this.tableRings = { ...rings };
+    this.render();
+  }
+
+  /**
+   * Replace the below-table labels (pass {} to remove them). Keeps zoom and pan.
+   */
+  public setTableLabels(labels: Record<string, string[]>): void {
+    if (!this.canvas || sameRecord(labels, this.tableLabels)) return;
+
+    this.tableLabels = { ...labels };
+    this.render();
   }
 
   /**

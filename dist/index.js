@@ -398,6 +398,7 @@ var mergeSelection = (current, hits, maxSelectable) => {
   }
   return merged;
 };
+var sameIds = (a, b) => a.length === b.length && a.every((id) => b.includes(id));
 var toCssRect = (rect, {
   canvasWidth,
   canvasHeight,
@@ -415,6 +416,18 @@ var toCssRect = (rect, {
     width: box.width * scaleX,
     height: box.height * scaleY
   };
+};
+var sameRecord = (a, b) => {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+    return left === right;
+  });
 };
 
 // src/helpers/decorations.ts
@@ -1824,6 +1837,41 @@ var FloorplanRenderer = class {
     this.resetView();
     this.render();
     this.captureMinimap();
+  }
+  /**
+   * The current selection (a copy).
+   */
+  getSelectedTableIds() {
+    return [...this.selectedTableIds];
+  }
+  /**
+   * Replace the selection without re-creating the renderer (keeps zoom and pan).
+   * Blocked ids are dropped and `maxSelectable` applies; no callbacks fire.
+   */
+  setSelectedTableIds(ids) {
+    if (!this.canvas) return;
+    let next = ids.filter((id) => !this.blockedTableIds.includes(id));
+    if (this.maxSelectable !== null) next = next.slice(0, this.maxSelectable);
+    if (sameIds(next, this.selectedTableIds)) return;
+    this.selectedTableIds = next;
+    this.render();
+  }
+  /**
+   * Replace the table rings (pass {} to remove them). Keeps zoom and pan; the
+   * minimap keeps its last capture, as it does for selection changes.
+   */
+  setTableRings(rings) {
+    if (!this.canvas || sameRecord(rings, this.tableRings)) return;
+    this.tableRings = { ...rings };
+    this.render();
+  }
+  /**
+   * Replace the below-table labels (pass {} to remove them). Keeps zoom and pan.
+   */
+  setTableLabels(labels) {
+    if (!this.canvas || sameRecord(labels, this.tableLabels)) return;
+    this.tableLabels = { ...labels };
+    this.render();
   }
   /**
    * Destroy the renderer and clean up resources

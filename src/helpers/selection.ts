@@ -143,3 +143,23 @@ export const toCssRect = (
     height: box.height * scaleY,
   };
 };
+
+/** Whether two id → value records hold the same entries (array values compared in order). */
+export const sameRecord = (
+  a: Record<string, string | string[]>,
+  b: Record<string, string | string[]>
+): boolean => {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return (
+        left.length === right.length &&
+        left.every((value, index) => value === right[index])
+      );
+    }
+    return left === right;
+  });
+};

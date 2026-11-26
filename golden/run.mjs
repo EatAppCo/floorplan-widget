@@ -33,6 +33,7 @@ const FEATURE_STATES = [
   'rings',
   'labels',
   'drag-select',
+  'setters',
 ];
 const states =
   only === 'features' ? FEATURE_STATES : only ? only.split(',') : ALL_STATES;
@@ -147,6 +148,31 @@ const interactions = {
   pinch: async (page) => pinch(page, 'sq'),
   'inside-text': async () => {},
   rings: async () => {},
+  setters: async (page, before) => {
+    await zoomIn(page);
+    before.steps = await page.evaluate(() => {
+      const r = window.__golden.renderer;
+      const count = () => {
+        const objects = r.canvas.getObjects();
+        return {
+          rings: objects.filter((o) => !o.tableContext && !o._relatedTableId)
+            .length,
+          labels: objects.filter((o) => o._positionOnTable === 'below').length,
+          vpt: r.canvas.viewportTransform.slice(),
+        };
+      };
+      const steps = { start: count() };
+      r.setTableRings({});
+      steps.noRings = count();
+      r.setTableRings({ T1: '#F5B94A', C1: '#7DB9F2', R2: '#F29BB0' });
+      steps.ringsBack = count();
+      r.setTableLabels({});
+      steps.noLabels = count();
+      r.setSelectedTableIds(['T1']);
+      steps.selected = count();
+      return steps;
+    });
+  },
   'drag-select': async (page) => {
     const rect = await page.evaluate(() => {
       const r = document
@@ -298,6 +324,35 @@ const expectations = {
         )
       );
     }
+  },
+  setters: (s, before) => {
+    const st = before.steps;
+    check(
+      st.start.rings === 3 && st.start.labels === 1,
+      `start ${JSON.stringify(st.start)}`
+    );
+    check(
+      st.noRings.rings === 0,
+      `rings not removed ${JSON.stringify(st.noRings)}`
+    );
+    check(
+      st.ringsBack.rings === 3,
+      `rings not restored ${JSON.stringify(st.ringsBack)}`
+    );
+    check(
+      st.noLabels.labels === 0,
+      `labels not removed ${JSON.stringify(st.noLabels)}`
+    );
+    const vpts = Object.values(st).map((x) => JSON.stringify(x.vpt));
+    check(
+      new Set(vpts).size === 1 && st.start.vpt[0] === 1.5,
+      `viewport moved: ${vpts}`
+    );
+    check(s.selected.join() === 'T1', `selected ${s.selected}`);
+    check(
+      s.selectionEvents.length === 0,
+      'setters must not fire onSelectionChange'
+    );
   },
   'drag-select': (s) => {
     check(
