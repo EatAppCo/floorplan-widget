@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format cjs --target es2019",
     "dev": "tsup src/index.ts --format cjs --target es2019 --watch",
-    "test": "tsup test/*.test.ts --format cjs --platform node --target es2019 --out-dir .test-dist --clean && node --test .test-dist/*.test.js",
+    "test": "tsup --config tsup.test.config.ts && node --test .test-dist/*.test.js",
     "lint": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
