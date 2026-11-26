@@ -27,7 +27,7 @@ const ALL_STATES = [
   'pinch',
 ];
 // Candidate-only checks of opt-in features, run by `npm run golden:features`.
-const FEATURE_STATES = ['inside-text', 'solid-selected'];
+const FEATURE_STATES = ['inside-text', 'solid-selected', 'rings', 'labels'];
 const states =
   only === 'features' ? FEATURE_STATES : only ? only.split(',') : ALL_STATES;
 
@@ -138,11 +138,36 @@ const interactions = {
   'showEmojis-false': async () => {},
   pinch: async (page) => pinch(page, 'sq'),
   'inside-text': async () => {},
+  rings: async () => {},
+  labels: async () => {},
   'solid-selected': async (page) => {
     const p = await tablePoint(page, 'T1');
     await page.mouse.click(p.x, p.y);
   },
 };
+
+// Every canvas object in drawing order, classified.
+async function layerList(page) {
+  return page.evaluate(() =>
+    window.__golden.renderer.canvas.getObjects().map((o, index) => {
+      const rect = o.getBoundingRect(true, true);
+      return {
+        index,
+        kind: o.tableContext
+          ? 'table'
+          : o._relatedTableId
+            ? `label:${o._positionOnTable}`
+            : 'other',
+        id: o.tableContext ? o.tableContext.id : o._relatedTableId || null,
+        stroke: o.stroke || null,
+        evented: o.evented,
+        top: rect.top,
+        bottom: rect.top + rect.height,
+        rects: (o._objects || []).filter((c) => c.type === 'rect').length,
+      };
+    })
+  );
+}
 
 // Inspect the real Fabric objects for the feature room's tables.
 async function tableObjects(page) {
@@ -244,6 +269,43 @@ const expectations = {
       );
     }
   },
+  rings: (s) => {
+    const rings = s.layers.filter(
+      (l) =>
+        l.kind === 'other' &&
+        ['#F5B94A', '#7DB9F2', '#F29BB0'].includes(l.stroke)
+    );
+    check(rings.length === 3, `rings ${JSON.stringify(rings)}`);
+    check(
+      rings.every((r) => r.evented === false),
+      'rings must not be interactive'
+    );
+    const firstTable = Math.min(
+      ...s.layers.filter((l) => l.kind === 'table').map((l) => l.index)
+    );
+    check(
+      rings.every((r) => r.index < firstTable),
+      `a ring is drawn above a table: ${JSON.stringify(rings)} vs ${firstTable}`
+    );
+  },
+  labels: (s) => {
+    const below = s.layers.filter((l) => l.kind === 'label:below');
+    check(
+      below.length === 1 && below[0].id === 'T1',
+      `below labels ${JSON.stringify(below)}`
+    );
+    check(below[0].rects === 3, `pills ${below[0].rects}`);
+    const tables = s.layers.filter((l) => l.kind === 'table');
+    check(
+      tables.every((t) => t.index < below[0].index),
+      'labels must be drawn above every table'
+    );
+    const t1 = tables.find((t) => t.id === 'T1');
+    check(
+      below[0].top >= t1.bottom,
+      `labels top ${below[0].top} above table bottom ${t1.bottom}`
+    );
+  },
   'solid-selected': (s) => {
     check(s.selected.join() === 'T1', `selected ${s.selected}`);
     check(s.objects.T1.fill === '#128849', `T1 fill ${s.objects.T1.fill}`);
@@ -304,8 +366,10 @@ try {
       );
 
       const after = await snapshot(page);
-      if (FEATURE_STATES.includes(state))
+      if (FEATURE_STATES.includes(state)) {
         after.objects = await tableObjects(page);
+        after.layers = await layerList(page);
+      }
       check(after.errors.length === 0, `errors after input: ${after.errors}`);
       check(pageErrors.length === 0, `page errors: ${pageErrors}`);
       expectations[state](after, before);

@@ -354,6 +354,59 @@ var sortTablesByRenderOrder = (tables, emojiList, selectedTableIds = []) => {
   });
 };
 
+// src/helpers/decorations.ts
+var RING_STROKE = 3;
+var RING_OUTER = 4;
+var LABEL_GAP = 4;
+var formatTableLabels = (labels, {
+  maxLabels = 3,
+  maxChars = 16
+} = {}) => {
+  const unique = [];
+  labels.forEach((label) => {
+    const trimmed = (label || "").trim();
+    if (trimmed && !unique.includes(trimmed)) unique.push(trimmed);
+  });
+  const shown = unique.slice(0, maxLabels).map(
+    (label) => Array.from(label).length > maxChars ? `${Array.from(label).slice(0, maxChars - 1).join("")}\u2026` : label
+  );
+  const hidden = unique.length - shown.length;
+  return hidden > 0 ? [...shown, `+${hidden}`] : shown;
+};
+var ringGeometry = ({
+  shape,
+  width,
+  height
+}) => {
+  const centreline = RING_OUTER - RING_STROKE / 2;
+  if (shape === "circle") {
+    return {
+      kind: "ellipse",
+      rx: Math.abs(width) / 2 + centreline,
+      ry: Math.abs(height) / 2 + centreline
+    };
+  }
+  return {
+    kind: "rect",
+    width: Math.abs(width) + centreline * 2,
+    height: Math.abs(height) + centreline * 2,
+    rx: FLOOR_DEFAULT.TABLE_RADIUS + centreline
+  };
+};
+var ringColorFor = (table, rings, isBlocked) => {
+  if (isBlocked || table.type !== "Table") return null;
+  if (isEmoji(table, floorEmojiList)) return null;
+  return rings[table.id] || null;
+};
+var belowLabelTop = ({
+  tableBottom,
+  badgeBottom
+}) => Math.max(tableBottom, badgeBottom != null ? badgeBottom : tableBottom) + LABEL_GAP;
+var renderLayers = (sorted) => ({
+  decor: sorted.filter((table) => table.type === "Shape"),
+  tables: sorted.filter((table) => table.type !== "Shape")
+});
+
 // src/helpers/tableStyle.ts
 var tableShapeStyle = ({
   isShape,
@@ -462,6 +515,8 @@ var FloorplanRenderer = class {
     this.selectionMode = "multi";
     this.tableContent = "badge";
     this.selectedAppearance = "tint";
+    this.tableRings = {};
+    this.tableLabels = {};
     this.maxSelectable = null;
     this.covers = 0;
     this.tableGroups = [];
@@ -513,6 +568,8 @@ var FloorplanRenderer = class {
     this.selectionMode = options.selectionMode || "multi";
     this.tableContent = options.tableContent || "badge";
     this.selectedAppearance = options.selectedAppearance || "tint";
+    this.tableRings = options.tableRings || {};
+    this.tableLabels = options.tableLabels || {};
     this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
     this.covers = (_b = options.covers) != null ? _b : 0;
     this.tableGroups = options.tableGroups || [];
@@ -1230,6 +1287,84 @@ var FloorplanRenderer = class {
     });
   }
   /**
+   * Opt-in ring around a table, drawn as its own non-interactive object behind
+   * every table so it never enlarges the table's click target.
+   */
+  createRing(table, color) {
+    const { top, left, width, height } = getDimensionsV2(
+      table,
+      this.canvasSize
+    );
+    const geometry = ringGeometry({ shape: table.shape, width, height });
+    const options = {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      top,
+      left,
+      angle: table.rotation || 0,
+      fill: "transparent",
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.6,
+      perPixelTargetFind: false
+    };
+    return geometry.kind === "ellipse" ? new import_fabric.fabric.Ellipse({ ...options, rx: geometry.rx, ry: geometry.ry }) : new import_fabric.fabric.Rect({
+      ...options,
+      width: geometry.width,
+      height: geometry.height,
+      rx: geometry.rx,
+      ry: geometry.rx
+    });
+  }
+  /**
+   * Opt-in stack of label pills under a table (e.g. seating areas). Unrotated,
+   * non-interactive, top-anchored so it grows downwards from the table.
+   */
+  createTableLabels(table) {
+    const texts = formatTableLabels(this.tableLabels[table.id] || []);
+    if (texts.length === 0) return null;
+    const config = LABEL_SIZE_CONFIG.very_small;
+    const pillHeight = config.LINE_HEIGHT;
+    const gap = 2;
+    const objects = [];
+    texts.forEach((label, index) => {
+      const centreY = index * (pillHeight + gap) + pillHeight / 2;
+      const text = new import_fabric.fabric.Text(label, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        fontFamily: "Inter, sans-serif",
+        fill: palette.dark50,
+        fontSize: config.TEXT_FONT_SIZE,
+        lineHeight: 1,
+        textAlign: "center"
+      });
+      const pill = new import_fabric.fabric.Rect({
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        width: (text.width || 0) + 10,
+        height: pillHeight,
+        rx: pillHeight / 2,
+        ry: pillHeight / 2,
+        fill: palette.white,
+        stroke: palette.gray,
+        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH
+      });
+      objects.push(pill, text);
+    });
+    return new LabelGroup_default(objects, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      originX: "center",
+      originY: "top",
+      _relatedTableId: table.id,
+      _positionOnTable: "below"
+    });
+  }
+  /**
    * Text objects for the number (and covers) inside a table, centred and sized by
    * `tableInsideText`. Returns null when the text cannot fit — either by the size
    * estimate or by Fabric's real text metrics — so the caller falls back to the
@@ -1381,9 +1516,20 @@ var FloorplanRenderer = class {
   /**
    * Position the label relative to its table group
    */
-  positionLabel(tableGroup, labelGroup) {
+  positionLabel(tableGroup, labelGroup, badgeGroup = null) {
     const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === "Shape";
+    if (labelGroup._positionOnTable === "below") {
+      const badgeRect = badgeGroup ? badgeGroup.getBoundingRect(true, true) : null;
+      labelGroup.set({
+        top: belowLabelTop({
+          tableBottom: boundingRect.top + boundingRect.height,
+          badgeBottom: badgeRect ? badgeRect.top + badgeRect.height : void 0
+        }),
+        left: boundingRect.left + boundingRect.width / 2
+      });
+      return;
+    }
     if (labelGroup._positionOnTable === "corner") {
       labelGroup.set({
         top: boundingRect.top + boundingRect.height,
@@ -1445,13 +1591,34 @@ var FloorplanRenderer = class {
         floorEmojiList,
         this.selectedTableIds
       );
-      sortedTables.forEach((table) => {
+      const { decor, tables } = renderLayers(sortedTables);
+      const addWithBadge = (table) => {
         const { tableGroup, labelGroup } = this.createTableObject(table);
         this.canvas.add(tableGroup);
         if (labelGroup) {
           this.positionLabel(tableGroup, labelGroup);
           this.canvas.add(labelGroup);
         }
+        return { tableGroup, labelGroup };
+      };
+      decor.forEach(addWithBadge);
+      tables.forEach((table) => {
+        const color = ringColorFor(
+          table,
+          this.tableRings,
+          this.blockedTableIds.includes(table.id)
+        );
+        if (color) this.canvas.add(this.createRing(table, color));
+      });
+      const belowLabels = [];
+      tables.forEach((table) => {
+        const { tableGroup, labelGroup } = addWithBadge(table);
+        const labels = this.createTableLabels(table);
+        if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
+      });
+      belowLabels.forEach(([tableGroup, labels, badge]) => {
+        this.positionLabel(tableGroup, labels, badge);
+        this.canvas.add(labels);
       });
       this.canvas.renderAll();
     } catch (error) {

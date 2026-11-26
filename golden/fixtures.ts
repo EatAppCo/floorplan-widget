@@ -102,6 +102,14 @@ export const stateOptions: Record<string, Record<string, unknown>> = {
   'showEmojis-false': { showEmojis: false },
   pinch: {},
   'inside-text': { tableContent: 'inside', initialRoomId: 'features' },
+  rings: {
+    initialRoomId: 'features',
+    tableRings: { T1: '#F5B94A', C1: '#7DB9F2', R2: '#F29BB0' },
+  },
+  labels: {
+    initialRoomId: 'features',
+    tableLabels: { T1: ['Garden terrace', 'Outdoor', 'Accessible'] },
+  },
   'solid-selected': {
     tableContent: 'inside',
     selectedAppearance: 'solid',

@@ -3,7 +3,12 @@ const { fabric } = require('fabric');
 /**
  * Position of the label relative to the table
  */
-export type LabelPosition = 'top' | 'bottom' | 'below_bottom' | 'corner';
+export type LabelPosition =
+  | 'top'
+  | 'bottom'
+  | 'below_bottom'
+  | 'corner'
+  | 'below';
 
 /**
  * Options for creating a LabelGroup

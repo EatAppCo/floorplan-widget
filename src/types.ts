@@ -99,6 +99,10 @@ export interface FloorplanRendererOptions {
   tableContent?: 'badge' | 'inside';
   /** Selected tables: `'tint'` (default, light green) or `'solid'` (green with white text) */
   selectedAppearance?: 'tint' | 'solid';
+  /** Table id → ring colour (e.g. a section). Rings are drawn behind tables; none by default. */
+  tableRings?: Record<string, string>;
+  /** Table id → labels drawn as pills under the table (max 3 + "+N"); none by default. */
+  tableLabels?: Record<string, string[]>;
   initialSelectedTableIds?: string[];
   onTableClick?: OnTableClickCallback;
   onRoomChange?: OnRoomChangeCallback;

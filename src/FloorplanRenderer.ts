@@ -19,6 +19,14 @@ import {
   sortTablesByRenderOrder,
 } from './helpers/tables';
 import {
+  belowLabelTop,
+  formatTableLabels,
+  renderLayers,
+  RING_STROKE,
+  ringColorFor,
+  ringGeometry,
+} from './helpers/decorations';
+import {
   SelectedAppearance,
   showNumberBadge,
   TableContent,
@@ -54,6 +62,8 @@ export class FloorplanRenderer {
   private selectionMode: 'single' | 'multi' = 'multi';
   private tableContent: TableContent = 'badge';
   private selectedAppearance: SelectedAppearance = 'tint';
+  private tableRings: Record<string, string> = {};
+  private tableLabels: Record<string, string[]> = {};
   private maxSelectable: number | null = null;
   private covers: number = 0;
   private tableGroups: string[][] = [];
@@ -111,6 +121,8 @@ export class FloorplanRenderer {
     this.selectionMode = options.selectionMode || 'multi';
     this.tableContent = options.tableContent || 'badge';
     this.selectedAppearance = options.selectedAppearance || 'tint';
+    this.tableRings = options.tableRings || {};
+    this.tableLabels = options.tableLabels || {};
     this.maxSelectable = options.maxSelectable ?? null;
     this.covers = options.covers ?? 0;
     this.tableGroups = options.tableGroups || [];
@@ -999,6 +1011,91 @@ export class FloorplanRenderer {
   }
 
   /**
+   * Opt-in ring around a table, drawn as its own non-interactive object behind
+   * every table so it never enlarges the table's click target.
+   */
+  private createRing(table: Table, color: string): fabric.Object {
+    const { top, left, width, height } = getDimensionsV2(
+      table,
+      this.canvasSize
+    );
+    const geometry = ringGeometry({ shape: table.shape, width, height });
+    const options = {
+      ...DISABLED_OBJECT_PROPERTIES,
+      ...CENTER_ORIGIN,
+      top,
+      left,
+      angle: table.rotation || 0,
+      fill: 'transparent',
+      stroke: color,
+      strokeWidth: RING_STROKE,
+      strokeUniform: true,
+      opacity: 0.6,
+      perPixelTargetFind: false,
+    };
+    return geometry.kind === 'ellipse'
+      ? new fabric.Ellipse({ ...options, rx: geometry.rx, ry: geometry.ry })
+      : new fabric.Rect({
+          ...options,
+          width: geometry.width,
+          height: geometry.height,
+          rx: geometry.rx,
+          ry: geometry.rx,
+        });
+  }
+
+  /**
+   * Opt-in stack of label pills under a table (e.g. seating areas). Unrotated,
+   * non-interactive, top-anchored so it grows downwards from the table.
+   */
+  private createTableLabels(table: Table): LabelGroup | null {
+    const texts = formatTableLabels(this.tableLabels[table.id] || []);
+    if (texts.length === 0) return null;
+
+    const config = LABEL_SIZE_CONFIG.very_small;
+    const pillHeight = config.LINE_HEIGHT;
+    const gap = 2;
+    const objects: fabric.Object[] = [];
+
+    texts.forEach((label, index) => {
+      const centreY = index * (pillHeight + gap) + pillHeight / 2;
+      const text = new fabric.Text(label, {
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        fontFamily: 'Inter, sans-serif',
+        fill: palette.dark50,
+        fontSize: config.TEXT_FONT_SIZE,
+        lineHeight: 1,
+        textAlign: 'center',
+      });
+      const pill = new fabric.Rect({
+        ...DISABLED_OBJECT_PROPERTIES,
+        ...CENTER_ORIGIN,
+        top: centreY,
+        left: 0,
+        width: (text.width || 0) + 10,
+        height: pillHeight,
+        rx: pillHeight / 2,
+        ry: pillHeight / 2,
+        fill: palette.white,
+        stroke: palette.gray,
+        strokeWidth: FLOOR_DEFAULT.STROKE_WIDTH,
+      });
+      objects.push(pill, text);
+    });
+
+    return new LabelGroup(objects, {
+      ...DISABLED_OBJECT_PROPERTIES,
+      originX: 'center',
+      originY: 'top',
+      _relatedTableId: table.id,
+      _positionOnTable: 'below',
+    });
+  }
+
+  /**
    * Text objects for the number (and covers) inside a table, centred and sized by
    * `tableInsideText`. Returns null when the text cannot fit — either by the size
    * estimate or by Fabric's real text metrics — so the caller falls back to the
@@ -1188,13 +1285,32 @@ export class FloorplanRenderer {
   /**
    * Position the label relative to its table group
    */
-  private positionLabel(tableGroup: TableGroup, labelGroup: LabelGroup): void {
+  private positionLabel(
+    tableGroup: TableGroup,
+    labelGroup: LabelGroup,
+    badgeGroup: LabelGroup | null = null
+  ): void {
     // Labels live in the same canvas coordinate space as their tables. Using
     // the default bounding rect applies the current viewport transform, so a
     // re-render while zoomed (for example after selecting a table) stores
     // screen-space coordinates that Fabric then zooms and pans a second time.
     const boundingRect = tableGroup.getBoundingRect(true, true);
     const isShape = tableGroup.tableContext.type === 'Shape';
+
+    // Below-table labels are top-anchored under the table, or under its badge
+    if (labelGroup._positionOnTable === 'below') {
+      const badgeRect = badgeGroup
+        ? badgeGroup.getBoundingRect(true, true)
+        : null;
+      labelGroup.set({
+        top: belowLabelTop({
+          tableBottom: boundingRect.top + boundingRect.height,
+          badgeBottom: badgeRect ? badgeRect.top + badgeRect.height : undefined,
+        }),
+        left: boundingRect.left + boundingRect.width / 2,
+      });
+      return;
+    }
 
     // The `$` badge straddles the table's bottom-right corner (per Figma)
     if (labelGroup._positionOnTable === 'corner') {
@@ -1294,16 +1410,42 @@ export class FloorplanRenderer {
         this.selectedTableIds
       );
 
-      // Create and add objects for each table
-      sortedTables.forEach((table) => {
+      // Layers: décor, then rings (so they never cover a table), then tables and
+      // their badges in the existing order, then below-table labels on top.
+      // Without rings or labels this is exactly the original single pass.
+      const { decor, tables } = renderLayers(sortedTables);
+      const addWithBadge = (table: Table) => {
         const { tableGroup, labelGroup } = this.createTableObject(table);
-
         this.canvas!.add(tableGroup as any);
-
         if (labelGroup) {
           this.positionLabel(tableGroup, labelGroup);
           this.canvas!.add(labelGroup as any);
         }
+        return { tableGroup, labelGroup };
+      };
+
+      decor.forEach(addWithBadge);
+
+      tables.forEach((table) => {
+        const color = ringColorFor(
+          table,
+          this.tableRings,
+          this.blockedTableIds.includes(table.id)
+        );
+        if (color) this.canvas!.add(this.createRing(table, color) as any);
+      });
+
+      const belowLabels: Array<[TableGroup, LabelGroup, LabelGroup | null]> =
+        [];
+      tables.forEach((table) => {
+        const { tableGroup, labelGroup } = addWithBadge(table);
+        const labels = this.createTableLabels(table);
+        if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
+      });
+
+      belowLabels.forEach(([tableGroup, labels, badge]) => {
+        this.positionLabel(tableGroup, labels, badge);
+        this.canvas!.add(labels as any);
       });
 
       this.canvas.renderAll();
