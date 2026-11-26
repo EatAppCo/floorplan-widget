@@ -101,6 +101,8 @@ export interface FloorplanRendererOptions {
   selectedAppearance?: 'tint' | 'solid';
   /** Table id → ring colour (e.g. a section). Rings are drawn behind tables; none by default. */
   tableRings?: Record<string, string>;
+  /** Show the room tabs above the plan (default true); hosts with their own room navigation pass false */
+  showRoomTabs?: boolean;
   /** Table id → labels drawn as pills under the table (max 3 + "+N"); none by default. */
   tableLabels?: Record<string, string[]>;
   initialSelectedTableIds?: string[];

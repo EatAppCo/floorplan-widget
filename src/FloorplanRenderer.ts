@@ -63,6 +63,7 @@ export class FloorplanRenderer {
   private tableContent: TableContent = 'badge';
   private selectedAppearance: SelectedAppearance = 'tint';
   private tableRings: Record<string, string> = {};
+  private showRoomTabs: boolean = true;
   private tableLabels: Record<string, string[]> = {};
   private maxSelectable: number | null = null;
   private covers: number = 0;
@@ -122,6 +123,7 @@ export class FloorplanRenderer {
     this.tableContent = options.tableContent || 'badge';
     this.selectedAppearance = options.selectedAppearance || 'tint';
     this.tableRings = options.tableRings || {};
+    this.showRoomTabs = options.showRoomTabs ?? true;
     this.tableLabels = options.tableLabels || {};
     this.maxSelectable = options.maxSelectable ?? null;
     this.covers = options.covers ?? 0;
@@ -861,6 +863,9 @@ export class FloorplanRenderer {
    * Render room tabs
    */
   private renderTabs(): void {
+    // Hosts that render their own room navigation can opt out entirely
+    if (!this.showRoomTabs) return;
+
     // Create tabs container if it doesn't exist
     if (!this.tabsContainerElement && this.containerElement) {
       this.tabsContainerElement = document.createElement('div');

@@ -516,6 +516,7 @@ var FloorplanRenderer = class {
     this.tableContent = "badge";
     this.selectedAppearance = "tint";
     this.tableRings = {};
+    this.showRoomTabs = true;
     this.tableLabels = {};
     this.maxSelectable = null;
     this.covers = 0;
@@ -551,7 +552,7 @@ var FloorplanRenderer = class {
     this.suppressTap = false;
     this.pinchStartDistance = 0;
     this.pinchStartZoom = 1;
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     this.onError = options.onError || null;
     this.onTableClick = options.onTableClick || null;
     this.onRoomChange = options.onRoomChange || null;
@@ -569,12 +570,13 @@ var FloorplanRenderer = class {
     this.tableContent = options.tableContent || "badge";
     this.selectedAppearance = options.selectedAppearance || "tint";
     this.tableRings = options.tableRings || {};
+    this.showRoomTabs = (_a = options.showRoomTabs) != null ? _a : true;
     this.tableLabels = options.tableLabels || {};
-    this.maxSelectable = (_a = options.maxSelectable) != null ? _a : null;
-    this.covers = (_b = options.covers) != null ? _b : 0;
+    this.maxSelectable = (_b = options.maxSelectable) != null ? _b : null;
+    this.covers = (_c = options.covers) != null ? _c : 0;
     this.tableGroups = options.tableGroups || [];
-    this.showBackgroundImage = (_c = options.showBackgroundImage) != null ? _c : true;
-    this.showEmojis = (_d = options.showEmojis) != null ? _d : true;
+    this.showBackgroundImage = (_d = options.showBackgroundImage) != null ? _d : true;
+    this.showEmojis = (_e = options.showEmojis) != null ? _e : true;
     this.roomUnavailableHint = options.roomUnavailableHint || "";
     this.selectedTableIds = (options.initialSelectedTableIds || []).filter(
       (id) => !this.blockedTableIds.includes(id)
@@ -1168,6 +1170,7 @@ var FloorplanRenderer = class {
    * Render room tabs
    */
   renderTabs() {
+    if (!this.showRoomTabs) return;
     if (!this.tabsContainerElement && this.containerElement) {
       this.tabsContainerElement = document.createElement("div");
       this.tabsContainerElement.className = "floorplan-tabs-container";
