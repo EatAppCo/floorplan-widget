@@ -39,6 +39,13 @@ test('setSelectedTableIds drops blocked ids, applies the cap and renders once', 
   });
 });
 
+test('setSelectedTableIds ignores duplicate ids instead of keeping the old selection', () => {
+  const { renderer } = setup();
+  renderer.setSelectedTableIds(['a', 'b']);
+  renderer.setSelectedTableIds(['a', 'a']);
+  assert.deepEqual(renderer.getSelectedTableIds(), ['a']);
+});
+
 test('getSelectedTableIds returns a copy', () => {
   const { renderer } = setup();
   renderer.setSelectedTableIds(['a']);

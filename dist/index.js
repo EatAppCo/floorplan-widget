@@ -1919,7 +1919,9 @@ var FloorplanRenderer = class {
    */
   setSelectedTableIds(ids) {
     if (!this.canvas) return;
-    let next = ids.filter((id) => !this.blockedTableIds.includes(id));
+    let next = Array.from(new Set(ids)).filter(
+      (id) => !this.blockedTableIds.includes(id)
+    );
     if (this.maxSelectable !== null) next = next.slice(0, this.maxSelectable);
     if (sameIds(next, this.selectedTableIds)) return;
     this.selectedTableIds = next;
