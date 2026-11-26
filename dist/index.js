@@ -479,6 +479,25 @@ var belowLabelTop = ({
   tableBottom,
   badgeBottom
 }) => Math.max(tableBottom, badgeBottom != null ? badgeBottom : tableBottom) + LABEL_GAP;
+var LABEL_STACK_GAP = 2;
+var separateLabelStacks = (boxes) => {
+  const order = boxes.map((box, index) => ({ box, index })).sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+  const placed = [];
+  const tops = new Array(boxes.length);
+  order.forEach(({ box, index }) => {
+    let top = box.top;
+    let blocker;
+    do {
+      blocker = placed.find(
+        (other) => box.left < other.left + other.width && other.left < box.left + box.width && top < other.top + other.height + LABEL_STACK_GAP && other.top < top + box.height + LABEL_STACK_GAP
+      );
+      if (blocker) top = blocker.top + blocker.height + LABEL_STACK_GAP;
+    } while (blocker);
+    placed.push({ ...box, top });
+    tops[index] = top;
+  });
+  return tops;
+};
 var renderLayers = (sorted) => ({
   decor: sorted.filter((table) => table.type === "Shape"),
   tables: sorted.filter((table) => table.type !== "Shape")
@@ -1850,8 +1869,15 @@ var FloorplanRenderer = class {
         const labels = this.createTableLabels(table);
         if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
       });
-      belowLabels.forEach(([tableGroup, labels, badge]) => {
+      const boxes = belowLabels.map(([tableGroup, labels, badge]) => {
         this.positionLabel(tableGroup, labels, badge);
+        labels.setCoords();
+        return labels.getBoundingRect(true, true);
+      });
+      const tops = separateLabelStacks(boxes);
+      belowLabels.forEach(([, labels], index) => {
+        const shift = tops[index] - boxes[index].top;
+        if (shift) labels.set({ top: (labels.top || 0) + shift }).setCoords();
         this.canvas.add(labels);
       });
       this.canvas.renderAll();

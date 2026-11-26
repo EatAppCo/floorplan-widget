@@ -90,6 +90,50 @@ export const belowLabelTop = ({
   badgeBottom?: number;
 }): number => Math.max(tableBottom, badgeBottom ?? tableBottom) + LABEL_GAP;
 
+/** Vertical space kept between two label stacks, the same as between pills. */
+export const LABEL_STACK_GAP = 2;
+
+export interface LabelStackBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Tops for below-table label stacks so that neighbouring stacks never cover
+ * each other. Stacks are placed top to bottom (then left to right); each keeps
+ * its own top unless it would cover a stack already placed, in which case it
+ * moves down just below it. Returns the tops in the input order.
+ */
+export const separateLabelStacks = (boxes: LabelStackBox[]): number[] => {
+  const order = boxes
+    .map((box, index) => ({ box, index }))
+    .sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+  const placed: LabelStackBox[] = [];
+  const tops: number[] = new Array(boxes.length);
+
+  order.forEach(({ box, index }) => {
+    let top = box.top;
+    let blocker: LabelStackBox | undefined;
+    do {
+      blocker = placed.find(
+        (other) =>
+          box.left < other.left + other.width &&
+          other.left < box.left + box.width &&
+          top < other.top + other.height + LABEL_STACK_GAP &&
+          other.top < top + box.height + LABEL_STACK_GAP
+      );
+      if (blocker) top = blocker.top + blocker.height + LABEL_STACK_GAP;
+    } while (blocker);
+
+    placed.push({ ...box, top });
+    tops[index] = top;
+  });
+
+  return tops;
+};
+
 /**
  * Split an already filtered and sorted list into décor (shapes and emojis,
  * drawn first) and everything else (tables, plus untyped entries, as before).

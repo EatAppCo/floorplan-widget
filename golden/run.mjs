@@ -32,6 +32,7 @@ const FEATURE_STATES = [
   'solid-selected',
   'rings',
   'labels',
+  'labels-crowded',
   'drag-select',
   'setters',
   'design',
@@ -198,6 +199,7 @@ const interactions = {
     if (!midDrag) throw new Error('no selection box was drawn during the drag');
   },
   labels: async () => {},
+  'labels-crowded': async () => {},
   'solid-selected': async (page) => {
     const p = await tablePoint(page, 'T1');
     await page.mouse.click(p.x, p.y);
@@ -223,6 +225,8 @@ async function layerList(page) {
         evented: o.evented,
         top: rect.top,
         bottom: rect.top + rect.height,
+        left: rect.left,
+        right: rect.left + rect.width,
         rects: (o._objects || []).filter((c) => c.type === 'rect').length,
       };
     })
@@ -382,6 +386,23 @@ const expectations = {
     check(
       rings.every((r) => r.index < firstTable),
       `a ring is drawn above a table: ${JSON.stringify(rings)} vs ${firstTable}`
+    );
+  },
+  'labels-crowded': (s) => {
+    const below = s.layers.filter((l) => l.kind === 'label:below');
+    check(below.length === 3, `below labels ${JSON.stringify(below)}`);
+    below.forEach((a, i) =>
+      below
+        .slice(i + 1)
+        .forEach((b) =>
+          check(
+            a.right <= b.left ||
+              b.right <= a.left ||
+              a.bottom <= b.top ||
+              b.bottom <= a.top,
+            `label stacks ${a.id} and ${b.id} overlap: ${JSON.stringify([a, b])}`
+          )
+        )
     );
   },
   labels: (s) => {

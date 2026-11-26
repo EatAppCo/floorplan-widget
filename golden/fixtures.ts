@@ -57,6 +57,13 @@ export const featureTables = [
   }),
 ];
 
+// Candidate-only room of tables set edge to edge, so their label pills collide.
+export const crowdedTables = [
+  t('K1', 0.4, 0.4, { shape: 'circle', size: '2.6x2.6', room_id: 'crowded' }),
+  t('K2', 0.46, 0.4, { shape: 'circle', size: '2.6x2.6', room_id: 'crowded' }),
+  t('K3', 0.52, 0.4, { shape: 'circle', size: '2.6x2.6', room_id: 'crowded' }),
+];
+
 // The Claude Design "Table Grouping Floorplan" Courtyard room, for the design review.
 const cy = (
   id: string,
@@ -148,6 +155,14 @@ export const rooms = [
     tables: featureTables,
   },
   {
+    id: 'crowded',
+    name: 'Crowded',
+    background_image_url: null,
+    background_image_sid: null,
+    table_ids: crowdedTables.map((x) => x.id),
+    tables: crowdedTables,
+  },
+  {
     id: 'courtyard',
     name: 'Courtyard',
     background_image_url: null,
@@ -182,6 +197,15 @@ export const stateOptions: Record<string, Record<string, unknown>> = {
   labels: {
     initialRoomId: 'features',
     tableLabels: { T1: ['Garden terrace', 'Outdoor', 'Accessible'] },
+  },
+  'labels-crowded': {
+    initialRoomId: 'crowded',
+    tableContent: 'inside',
+    tableLabels: {
+      K1: ['Beach view', 'Pool side'],
+      K2: ['Beach view'],
+      K3: ['Live music', 'Pool side'],
+    },
   },
   design: {
     initialRoomId: 'courtyard',

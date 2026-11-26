@@ -8,6 +8,7 @@ import {
   ringColorFor,
   ringGeometry,
   ringGlow,
+  separateLabelStacks,
 } from '../src/helpers/decorations';
 import { buildRenderer, room, stubCanvas, table } from './support/renderer';
 import type { Table } from '../src/types';
@@ -110,11 +111,25 @@ function layeredRender(options: Parameters<typeof buildRenderer>[0]) {
     labelGroup: t.id === 't1' ? `badge:${t.id}` : null,
   });
   renderer.createRing = (t: Table) => `ring:${t.id}`;
+  // Label stacks are measured and spread out after positioning, so they need
+  // just enough of a Fabric object to be laid out side by side.
+  let column = 0;
   renderer.createTableLabels = (t: Table) =>
-    renderer.tableLabels[t.id] ? `labels:${t.id}` : null;
+    renderer.tableLabels[t.id]
+      ? {
+          name: `labels:${t.id}`,
+          box: { left: (column += 100), top: 0, width: 50, height: 16 },
+          setCoords() {},
+          getBoundingRect() {
+            return this.box;
+          },
+        }
+      : null;
   renderer.positionLabel = () => {};
   renderer.render();
-  return canvas.added;
+  return canvas.added.map((object: any) =>
+    typeof object === 'string' ? object : object.name
+  );
 }
 
 test('with rings and labels: décor, rings, tables + badges, then labels', () => {
@@ -151,4 +166,35 @@ test('ringGlow turns a section hex into a translucent glow colour', () => {
   assert.equal(ringGlow('#F5B94A'), 'rgba(245, 185, 74, 0.45)');
   assert.equal(ringGlow('7db'), 'rgba(119, 221, 187, 0.45)');
   assert.equal(ringGlow('not-a-colour'), 'rgba(0, 0, 0, 0)');
+});
+
+test("separateLabelStacks leaves stacks that don't touch where they are", () => {
+  assert.deepEqual(
+    separateLabelStacks([
+      { left: 0, top: 50, width: 60, height: 16 },
+      { left: 80, top: 50, width: 60, height: 16 },
+    ]),
+    [50, 50]
+  );
+});
+
+test('separateLabelStacks moves a stack below one it would cover', () => {
+  assert.deepEqual(
+    separateLabelStacks([
+      { left: 0, top: 50, width: 70, height: 16 },
+      { left: 40, top: 50, width: 70, height: 34 },
+      { left: 90, top: 52, width: 70, height: 16 },
+    ]),
+    [50, 68, 104]
+  );
+});
+
+test('separateLabelStacks keeps the input order and places upper stacks first', () => {
+  assert.deepEqual(
+    separateLabelStacks([
+      { left: 40, top: 60, width: 70, height: 16 },
+      { left: 0, top: 50, width: 70, height: 16 },
+    ]),
+    [68, 50]
+  );
 });

@@ -31,6 +31,7 @@ import {
   belowLabelTop,
   formatTableLabels,
   renderLayers,
+  separateLabelStacks,
   RING_STROKE,
   ringColorFor,
   ringGeometry,
@@ -1640,8 +1641,17 @@ export class FloorplanRenderer {
         if (labels) belowLabels.push([tableGroup, labels, labelGroup]);
       });
 
-      belowLabels.forEach(([tableGroup, labels, badge]) => {
+      // Place every stack under its table, then push down any that would cover
+      // a neighbour's (tables set edge to edge have overlapping pills).
+      const boxes = belowLabels.map(([tableGroup, labels, badge]) => {
         this.positionLabel(tableGroup, labels, badge);
+        labels.setCoords();
+        return labels.getBoundingRect(true, true);
+      });
+      const tops = separateLabelStacks(boxes);
+      belowLabels.forEach(([, labels], index) => {
+        const shift = tops[index] - boxes[index].top;
+        if (shift) labels.set({ top: (labels.top || 0) + shift }).setCoords();
         this.canvas!.add(labels as any);
       });
 
